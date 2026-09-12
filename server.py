@@ -821,8 +821,9 @@ def parse_ai_document_blocks(text: str, width: int, height: int) -> list[dict]:
     for raw in raw_blocks[:240]:
         if not isinstance(raw, dict):
             continue
-        kind = str(raw.get("type") or raw.get("kind") or "text").lower()
-        kind = "image" if kind in {"image", "picture", "photo", "figure", "diagram", "chart"} else "text"
+        raw_kind = str(raw.get("type") or raw.get("kind") or "text").lower()
+        is_formula = raw_kind in {"formula", "math", "equation"}
+        kind = "image" if raw_kind in {"image", "picture", "photo", "figure", "diagram", "chart"} else "text"
         bbox = raw.get("bbox")
         if not isinstance(bbox, list) or len(bbox) != 4:
             bbox = [0, 0, 1000, 1000]
@@ -838,10 +839,13 @@ def parse_ai_document_blocks(text: str, width: int, height: int) -> list[dict]:
             round(x2 * width / 1000), round(y2 * height / 1000),
         ]
         if kind == "text":
-            value = raw.get("text") or raw.get("content") or ""
+            value = raw.get("text") or raw.get("latex") or raw.get("formula") or raw.get("content") or ""
             if not isinstance(value, str) or not value.strip():
                 continue
-            blocks.append({"type": "text", "bbox": pixel_bbox, "text": value.strip()})
+            value = value.strip()
+            if is_formula and not re.search(r"(?:\\\(|\\\[|\$)", value):
+                value = r"\(" + value + r"\)"
+            blocks.append({"type": "text", "bbox": pixel_bbox, "text": value})
         else:
             blocks.append({
                 "type": "image", "bbox": pixel_bbox,
@@ -862,8 +866,8 @@ async def _analyze_ai_word_page_once(data: bytes, model: str = CLIPROXY_MODEL) -
         raise HTTPException(400, "无法识别图片格式") from exc
     prompt = f"""你是中文文档 OCR 和版面分析器。图片尺寸为 {width}×{height} 像素。
 按从上到下、从左到右的阅读顺序识别图片里的所有内容，输出 blocks 数组。
-文字块 type 必须是 text，text 必须逐字保留；数学公式请用 LaTeX（行内 \\( \\)，独立公式 \\[ \\]）。
-非文字内容（几何图、函数图、表格截图、照片、手写图、插图）用 type=image，并给出只包住图本身的 bbox；不要把普通文字当图片，也不要重复识别图片里的文字。
+文字块 type 必须是 text，text 必须逐字保留；数学公式必须识别成 LaTeX 文字（行内 \\( \\)，独立公式 \\[ \\]），绝对不要把公式截图或公式区域标记为 type=image。若单独返回公式，可使用 type=formula 并把 LaTeX 放进 latex 字段。
+只有无法转成文字的非文字内容（几何图、函数图、表格截图、照片、手写图、插图）才用 type=image，并给出只包住图本身的 bbox；不要把普通文字或数学公式当图片，也不要重复识别图片里的文字。
 bbox 是 0 到 1000 的归一化坐标 [x1,y1,x2,y2]，原点在左上角。不要漏掉题号、选项、单位和标点。
 JSON 字符串里的反斜杠必须写成两个反斜杠（例如 \\\\frac、\\\\sqrt、\\\\(），否则 JSON 无法解析。
 只返回 JSON，不要 Markdown 或解释：{{"blocks":[{{"type":"text","bbox":[x1,y1,x2,y2],"text":"..."}},{{"type":"image","bbox":[x1,y1,x2,y2],"caption":"可选说明"}}]}}"""

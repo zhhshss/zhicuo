@@ -25,7 +25,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 try:
     from latex2mathml.converter import convert as latex_to_mathml
     from mathml2omml import convert as mathml_to_omml
@@ -99,11 +99,22 @@ _FORMULA_RE = re.compile(
     r"(\\\[.*?\\\]|\\\(.*?\\\)|\$\$.*?\$\$|\$(?=[^$\n]*?(?:\\[A-Za-z]+|[\^_=]))[^$\n]+\$)",
     re.S,
 )
+_BARE_FORMULA_RE = re.compile(
+    r"(?<![\w\\])(?:[A-Za-z](?:[_^](?:\{[^{}\n]+\}|[A-Za-z0-9]))+)(?![\w])"
+)
+
+
 def _formula_parts(text: str) -> list[tuple[str, str, bool]]:
     """拆分普通文字和四种常见公式定界符。"""
     parts: list[tuple[str, str, bool]] = []
     cursor = 0
-    for match in _FORMULA_RE.finditer(text):
+    matches = list(_FORMULA_RE.finditer(text))
+    occupied = [(match.start(), match.end()) for match in matches]
+    for match in _BARE_FORMULA_RE.finditer(text):
+        if not any(start < match.end() and match.start() < end for start, end in occupied):
+            matches.append(match)
+    matches.sort(key=lambda match: match.start())
+    for match in matches:
         if match.start() > cursor:
             parts.append(("text", text[cursor:match.start()], False))
         raw = match.group(0)
@@ -113,8 +124,10 @@ def _formula_parts(text: str) -> list[tuple[str, str, bool]]:
             formula, display = raw[2:-2], False
         elif raw.startswith("$$") and raw.endswith("$$"):
             formula, display = raw[2:-2], True
-        else:
+        elif raw.startswith("$") and raw.endswith("$"):
             formula, display = raw[1:-1], False
+        else:
+            formula, display = raw, False
         parts.append(("formula", formula.strip(), display))
         cursor = match.end()
     if cursor < len(text):
@@ -403,12 +416,20 @@ class _LatexOMMLParser:
 
 
 def _omml_formula(formula: str, display: bool = False):
-    if latex_to_mathml is None or mathml_to_omml is None:
-        raise RuntimeError("Word 原生公式依赖未安装，请执行 pip install -r requirements.txt")
-    mathml = latex_to_mathml(normalize_formula_text(formula), display="block" if display else "inline")
-    omml_text = mathml_to_omml(mathml)
-    omml_text = omml_text.replace("<m:oMath>", f'<m:oMath xmlns:m="{_OMML_NS}">', 1)
-    omml = parse_xml(omml_text.encode("utf-8"))
+    normalized = normalize_formula_text(formula).strip()
+    omml = None
+    if latex_to_mathml is not None and mathml_to_omml is not None:
+        try:
+            mathml = latex_to_mathml(normalized, display="block" if display else "inline")
+            omml_text = mathml_to_omml(mathml)
+            omml_text = omml_text.replace("<m:oMath>", f'<m:oMath xmlns:m="{_OMML_NS}">', 1)
+            omml = parse_xml(omml_text.encode("utf-8"))
+        except Exception:
+            omml = None
+    if omml is None:
+        formula_root = _omml_element("oMath")
+        formula_root.append(_omml_container("e", _LatexOMMLParser(normalized).parse()))
+        omml = formula_root
     if display:
         paragraph = _omml_element("oMathPara")
         paragraph.append(omml)
@@ -434,7 +455,7 @@ def _append_formula_paragraph(document: Document, text: str, usable_width: float
             try:
                 paragraph._p.append(_omml_formula(value, display))
             except Exception:
-                paragraph.add_run((r"\[" if display else r"\(") + value + (r"\]" if display else r"\)"))
+                paragraph.add_run(value)
 
 
 def _options(raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -858,7 +879,15 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
         style._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
     styles["Normal"].font.size = Pt(opt["font_size"])
     styles["Normal"].paragraph_format.line_spacing = opt["line_spacing"]
-    styles["Normal"].paragraph_format.space_after = Pt(5)
+    styles["Normal"].paragraph_format.space_after = Pt(7)
+    styles["Title"].font.size = Pt(25)
+    styles["Subtitle"].font.size = Pt(9)
+    styles["Heading 1"].font.size = Pt(17)
+    styles["Heading 1"].paragraph_format.space_before = Pt(12)
+    styles["Heading 1"].paragraph_format.space_after = Pt(5)
+    styles["Heading 2"].font.size = Pt(12)
+    styles["Heading 2"].paragraph_format.space_before = Pt(9)
+    styles["Heading 2"].paragraph_format.space_after = Pt(3)
 
     title = document.add_heading(opt["title"], 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -868,7 +897,16 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
     summary.alignment = WD_ALIGN_PARAGRAPH.CENTER
     document.add_paragraph()
 
-    usable_width = max(6.0, width - opt["margin_left"] - opt["margin_right"])
+    usable_width = max(60.0, width - opt["margin_left"] - opt["margin_right"])
+    usable_height = max(80.0, height - opt["margin_top"] - opt["margin_bottom"])
+    max_image_width = max(8.0, min(17.2, usable_width / 10 - 0.4))
+    max_image_height = max(8.0, min(23.5, usable_height / 10 - 1.0))
+
+    def configure_paragraph(paragraph, before=0, after=0, keep=False) -> None:
+        paragraph.paragraph_format.space_before = Pt(before)
+        paragraph.paragraph_format.space_after = Pt(after)
+        paragraph.paragraph_format.keep_together = keep
+        paragraph.paragraph_format.widow_control = True
 
     def render_blocks(blocks: list[dict[str, Any]]) -> None:
         for block in blocks:
@@ -876,17 +914,32 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             if kind == "image" and block.get("data"):
                 paragraph = document.add_paragraph()
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                paragraph.paragraph_format.space_after = Pt(6)
+                configure_paragraph(paragraph, before=5, after=2, keep=True)
                 stream = io.BytesIO(block["data"])
                 try:
-                    paragraph.add_run().add_picture(stream, width=Cm(min(usable_width, 16.5)))
-                except (ValueError, OSError):
+                    with Image.open(io.BytesIO(block["data"])) as source:
+                        image = ImageOps.exif_transpose(source)
+                        image_width, image_height = image.size
+                    if not image_width or not image_height:
+                        continue
+                    scale = min(
+                        max_image_width / (image_width / 96 * 2.54),
+                        max_image_height / (image_height / 96 * 2.54),
+                        1.0,
+                    )
+                    picture_width = image_width / 96 * 2.54 * scale
+                    picture_height = image_height / 96 * 2.54 * scale
+                    paragraph.add_run().add_picture(
+                        stream, width=Cm(picture_width), height=Cm(picture_height)
+                    )
+                except (ValueError, OSError, UnidentifiedImageError):
                     continue
                 caption = str(block.get("caption") or "").strip()
                 if caption:
                     caption_paragraph = document.add_paragraph(caption)
                     caption_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     caption_paragraph.style = styles["Subtitle"]
+                    configure_paragraph(caption_paragraph, after=5, keep=True)
                 continue
             if kind in {"image-pending", "image"}:
                 continue
@@ -897,15 +950,16 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             style = str(block.get("style") or "text")
             if style == "title":
                 paragraph = document.add_heading(text, level=1)
+                configure_paragraph(paragraph, before=4, after=6, keep=True)
             elif style == "heading":
                 paragraph = document.add_heading(text, level=2)
+                configure_paragraph(paragraph, before=9, after=3, keep=True)
             elif style == "meta":
                 paragraph = document.add_paragraph(text, style="Subtitle")
+                configure_paragraph(paragraph, after=8, keep=True)
             else:
                 _append_formula_paragraph(document, text, usable_width, opt["font_size"])
                 continue
-            paragraph.paragraph_format.keep_together = True
-            paragraph.paragraph_format.widow_control = True
 
     for page_index, page in enumerate(pages, 1):
         if page_index > 1:
@@ -926,7 +980,7 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for page_index, blocks in enumerate(answer_pages, 1):
                 if page_index > 1:
-                    document.add_paragraph("—" * 24)
+                    document.add_page_break()
                 document.add_heading(f"第 {page_index} 题", level=1)
                 render_blocks(blocks)
 
