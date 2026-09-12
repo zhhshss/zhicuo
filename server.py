@@ -1129,18 +1129,9 @@ async def api_question_regions_ai(file: UploadFile = File(...), model: str = For
     print(f"[regions-ai] start {file.filename}: original={image_info['originalSize']}B, optimized={image_info['size']}B, size={image_info['width']}x{image_info['height']}, model={model or CLIPROXY_MODEL}")
     ai_data = data
     ai_width, ai_height = image_info["width"], image_info["height"]
-    ai_rotated = ai_width > ai_height * 1.12
-    if ai_rotated:
-        with Image.open(io.BytesIO(data)) as source:
-            upright = source.transpose(Image.Transpose.ROTATE_270)
-            output = io.BytesIO()
-            upright.save(output, format="JPEG", quality=86, optimize=True, progressive=True)
-            ai_data = output.getvalue()
-            ai_width, ai_height = upright.size
     async def run_ai() -> tuple[str, dict | None, HTTPException | None]:
         try:
             result = await detect_question_regions_ai(ai_data, ai_width, ai_height, model)
-            result["rotated"] = ai_rotated
             return "ai", result, None
         except HTTPException as exc:
             print(f"[regions-ai] failed {file.filename}: {exc.detail}")
@@ -1152,34 +1143,25 @@ async def api_question_regions_ai(file: UploadFile = File(...), model: str = For
         except HTTPException as exc:
             return "ocr", None, exc
 
-    tasks = {asyncio.create_task(run_ai()), asyncio.create_task(run_ocr())}
-    errors: dict[str, HTTPException] = {}
-    while tasks:
-        done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        outcomes = [task.result() for task in done]
-        outcomes.sort(key=lambda outcome: 0 if outcome[0] == "ai" else 1)
-        for detector, result, error in outcomes:
-            if error:
-                errors[detector] = error
-                continue
-            for pending in tasks:
-                pending.cancel()
-            if detector == "ai":
-                print(f"[regions-ai] ✅ {file.filename} -> {len(result['regions'])} boxes via {result.get('detector') or CLIPROXY_MODEL}")
-            else:
-                ai_error = errors.get("ai")
-                if ai_error:
-                    result["warnings"] = [
-                        f"AI 拆题暂不可用，已使用本地 OCR：{ai_error.detail}",
-                        *(result.get("warnings") or []),
-                    ]
-                    result["detector"] = "本地 OCR（AI 回退）"
-                else:
-                    result["detector"] = "本地 OCR（快速结果）"
-                print(f"[regions-ai] ⚡ {file.filename} -> {len(result['regions'])} boxes via {result['detector']}")
-            return {"success": True, "image": image_info, **result}
-    preferred = errors.get("ai") or errors.get("ocr")
-    raise preferred or HTTPException(502, "AI 与本地 OCR 均未返回结果")
+    ocr_task = asyncio.create_task(run_ocr())
+    _, ai_result, ai_error = await run_ai()
+    if ai_result is not None:
+        if not ocr_task.done():
+            ocr_task.cancel()
+        await asyncio.gather(ocr_task, return_exceptions=True)
+        print(f"[regions-ai] ✅ {file.filename} -> {len(ai_result['regions'])} boxes via {ai_result.get('detector') or CLIPROXY_MODEL}")
+        return {"success": True, "image": image_info, **ai_result}
+
+    _, ocr_result, ocr_error = await ocr_task
+    if ocr_result is not None:
+        ocr_result["warnings"] = [
+            f"AI 拆题暂不可用，已使用本地 OCR：{ai_error.detail if ai_error else '未知错误'}",
+            *(ocr_result.get("warnings") or []),
+        ]
+        ocr_result["detector"] = "本地 OCR（AI 回退）"
+        print(f"[regions-ai] ⚡ {file.filename} -> {len(ocr_result['regions'])} boxes via {ocr_result['detector']}")
+        return {"success": True, "image": image_info, **ocr_result}
+    raise ai_error or ocr_error or HTTPException(502, "AI 与本地 OCR 均未返回结果")
 
 
 # ---- 普通拍题 ----

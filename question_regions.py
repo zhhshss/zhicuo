@@ -38,9 +38,6 @@ def _box_xy(box) -> tuple[float, float, float, float]:
 
 
 def upright_image(image: np.ndarray) -> tuple[np.ndarray, bool]:
-    height, width = image.shape[:2]
-    if width > height * 1.12:
-        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE), True
     return image, False
 
 
