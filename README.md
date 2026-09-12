@@ -34,15 +34,15 @@ pip install -r requirements.txt
 python server.py
 ```
 
-默认端口是 `50003`。启动时会自动检测 Tailscale IPv4，并只监听该地址；请使用启动日志中显示的地址访问，例如：
+默认端口是 `50005`。启动时会自动检测 Tailscale IPv4，并只监听该地址；请使用启动日志中显示的地址访问，例如：
 
 ```text
-http://100.x.x.x:50003
+http://100.x.x.x:50005
 ```
 
 同一 Tailnet 中的电脑、手机和平板均可使用该地址访问。这样不会默认把含本地错题和 AI Token 的页面暴露给其他网卡。
 
-没有安装或未连接 Tailscale 时，服务会回退到 `127.0.0.1:50003`。
+没有安装或未连接 Tailscale 时，服务会回退到 `127.0.0.1:50005`；如果该回环端口已被本机代理占用，请通过 `MISTAKE_BOOK_PORT` 指定其他端口。
 
 如需自定义端口：
 
@@ -53,7 +53,7 @@ MISTAKE_BOOK_PORT=19000 bash "run.sh"
 如确实需要同时允许局域网访问，可显式监听全部网卡：
 
 ```bash
-MISTAKE_BOOK_HOST=0.0.0.0 MISTAKE_BOOK_PORT=50003 bash "run.sh"
+MISTAKE_BOOK_HOST=0.0.0.0 MISTAKE_BOOK_PORT=50005 bash "run.sh"
 ```
 
 ## 访问鉴权

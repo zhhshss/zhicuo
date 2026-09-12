@@ -342,7 +342,7 @@ def project_file_map() -> dict:
         "echo ==============================\r\n"
         "pip install -r requirements.txt\r\n"
         "python server.py\r\n"
-        "start http://localhost:50003\r\n"
+        "start http://localhost:50005\r\n"
         "pause\r\n"
     )
     out["ai-solve-proxy/run.sh"] = (
@@ -350,7 +350,7 @@ def project_file_map() -> dict:
         "pip3 install -r requirements.txt\n"
         "python3 server.py &\n"
         "sleep 2\n"
-        "(open http://localhost:50003 || xdg-open http://localhost:50003) 2>/dev/null\n"
+        "(open http://localhost:50005 || xdg-open http://localhost:50005) 2>/dev/null\n"
     )
     return out
 
@@ -1915,7 +1915,7 @@ if __name__ == "__main__":
 
     tailscale_ip = tailscale_ipv4()
     HOST = os.environ.get("MISTAKE_BOOK_HOST") or tailscale_ip or "127.0.0.1"
-    PORT = int(os.environ.get("MISTAKE_BOOK_PORT", "50003"))
+    PORT = int(os.environ.get("MISTAKE_BOOK_PORT", "50005"))
     access_host = tailscale_ip if tailscale_ip and HOST in (tailscale_ip, "0.0.0.0") else "127.0.0.1"
     access_url = f"http://{access_host}:{PORT}"
     print(f"==============================================")
