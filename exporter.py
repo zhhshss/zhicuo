@@ -437,12 +437,10 @@ def _omml_formula(formula: str, display: bool = False):
     return omml
 
 
-def _append_formula_paragraph(document: Document, text: str, usable_width: float, font_size: float) -> None:
-    """添加可混排的文字与 Word 原生公式段落。"""
-    for line in normalize_formula_text(text).splitlines() or [""]:
-        paragraph = document.add_paragraph()
-        paragraph.paragraph_format.keep_together = True
-        paragraph.paragraph_format.widow_control = True
+def _append_formula_runs(paragraph, text: str) -> None:
+    for line_index, line in enumerate(normalize_formula_text(text).splitlines() or [""]):
+        if line_index:
+            paragraph.add_run().add_break()
         parts = _formula_parts(line)
         has_display = any(kind == "formula" and display for kind, _value, display in parts)
         if has_display:
@@ -456,6 +454,14 @@ def _append_formula_paragraph(document: Document, text: str, usable_width: float
                 paragraph._p.append(_omml_formula(value, display))
             except Exception:
                 paragraph.add_run(value)
+
+
+def _append_formula_paragraph(document: Document, text: str, usable_width: float, font_size: float) -> None:
+    """添加可混排的文字与 Word 原生公式段落。"""
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.keep_together = True
+    paragraph.paragraph_format.widow_control = True
+    _append_formula_runs(paragraph, text)
 
 
 def _options(raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -908,30 +914,68 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
         paragraph.paragraph_format.keep_together = keep
         paragraph.paragraph_format.widow_control = True
 
-    def render_blocks(blocks: list[dict[str, Any]]) -> None:
+    def render_blocks(blocks: list[dict[str, Any]], inline_text: bool = False) -> None:
+        flow_paragraph = None
+
+        def flush_flow() -> None:
+            nonlocal flow_paragraph
+            flow_paragraph = None
+
+        def ensure_flow():
+            nonlocal flow_paragraph
+            if flow_paragraph is None:
+                flow_paragraph = document.add_paragraph()
+                configure_paragraph(flow_paragraph, after=7, keep=True)
+            return flow_paragraph
+
+        def image_size(data: bytes):
+            with Image.open(io.BytesIO(data)) as source:
+                image = ImageOps.exif_transpose(source)
+                image_width, image_height = image.size
+            if not image_width or not image_height:
+                return None
+            scale = min(
+                max_image_width / (image_width / 96 * 2.54),
+                max_image_height / (image_height / 96 * 2.54),
+                1.0,
+            )
+            return (
+                image_width / 96 * 2.54 * scale,
+                image_height / 96 * 2.54 * scale,
+                image_width,
+                image_height,
+            )
+
+        def append_image(paragraph, block: dict[str, Any], inline: bool = False) -> bool:
+            data = block.get("data")
+            if not data:
+                return False
+            dimensions = image_size(data)
+            if dimensions is None:
+                return False
+            picture_width, picture_height, image_width, image_height = dimensions
+            is_inline = image_width <= 480 and image_height <= 180
+            if inline and not is_inline:
+                return False
+            paragraph.add_run().add_picture(
+                io.BytesIO(data), width=Cm(picture_width), height=Cm(picture_height)
+            )
+            return is_inline
+
         for block in blocks:
             kind = str(block.get("type") or "text").lower()
             if kind == "image" and block.get("data"):
-                paragraph = document.add_paragraph()
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                configure_paragraph(paragraph, before=5, after=2, keep=True)
-                stream = io.BytesIO(block["data"])
                 try:
-                    with Image.open(io.BytesIO(block["data"])) as source:
-                        image = ImageOps.exif_transpose(source)
-                        image_width, image_height = image.size
-                    if not image_width or not image_height:
-                        continue
-                    scale = min(
-                        max_image_width / (image_width / 96 * 2.54),
-                        max_image_height / (image_height / 96 * 2.54),
-                        1.0,
-                    )
-                    picture_width = image_width / 96 * 2.54 * scale
-                    picture_height = image_height / 96 * 2.54 * scale
-                    paragraph.add_run().add_picture(
-                        stream, width=Cm(picture_width), height=Cm(picture_height)
-                    )
+                    if inline_text:
+                        dimensions = image_size(block["data"])
+                        if dimensions and dimensions[2] <= 480 and dimensions[3] <= 180:
+                            append_image(ensure_flow(), block, inline=True)
+                            continue
+                        flush_flow()
+                    paragraph = document.add_paragraph()
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    configure_paragraph(paragraph, before=5, after=2, keep=True)
+                    append_image(paragraph, block)
                 except (ValueError, OSError, UnidentifiedImageError):
                     continue
                 caption = str(block.get("caption") or "").strip()
@@ -948,6 +992,10 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             if not text:
                 continue
             style = str(block.get("style") or "text")
+            if style == "text" and inline_text:
+                _append_formula_runs(ensure_flow(), text)
+                continue
+            flush_flow()
             if style == "title":
                 paragraph = document.add_heading(text, level=1)
                 configure_paragraph(paragraph, before=4, after=6, keep=True)
@@ -960,6 +1008,7 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             else:
                 _append_formula_paragraph(document, text, usable_width, opt["font_size"])
                 continue
+        flush_flow()
 
     for page_index, page in enumerate(pages, 1):
         if page_index > 1:
@@ -968,7 +1017,7 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             heading = document.add_heading(f"第 {page_index} 页", level=1)
             heading.paragraph_format.keep_with_next = True
         blocks = page.get("blocks") or []
-        render_blocks(blocks)
+        render_blocks(blocks, inline_text=bool(page.get("mixed")))
         if not blocks:
             document.add_paragraph("（AI 未识别到可用内容）")
 
@@ -982,7 +1031,7 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
                 if page_index > 1:
                     document.add_page_break()
                 document.add_heading(f"第 {page_index} 题", level=1)
-                render_blocks(blocks)
+                render_blocks(blocks, inline_text=True)
 
     if opt["page_numbers"]:
         _word_page_number(section.footer.paragraphs[0])

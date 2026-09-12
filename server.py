@@ -997,12 +997,34 @@ async def _read_ai_source_image(source: str) -> bytes:
 
 async def _ai_blocks_for_image(data: bytes, caption: str = "", model: str = "") -> list[dict]:
     """只把图片本身交给视觉模型；模型识别到的图片块再按框裁切。"""
+    analysis_data = data
     try:
-        result = await analyze_ai_word_page(data, model)
-        return crop_ai_image_blocks(data, result["blocks"])
+        with Image.open(io.BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            if image.width <= 800 and image.height <= 260:
+                scale = min(4.0, max(1.0, 640 / max(image.width, 1)))
+                if scale > 1:
+                    image = image.resize(
+                        (round(image.width * scale), round(image.height * scale)),
+                        Image.Resampling.LANCZOS,
+                    )
+                    output = io.BytesIO()
+                    image.save(output, format="JPEG", quality=95, optimize=True)
+                    analysis_data = output.getvalue()
+    except (UnidentifiedImageError, OSError):
+        analysis_data = data
+    try:
+        result = await analyze_ai_word_page(analysis_data, model)
+        return crop_ai_image_blocks(analysis_data, result["blocks"])
     except HTTPException as exc:
-        # 上游失败时保留原图，避免导出结果丢失；不伪造 OCR 文字。
         print(f"[ai-word] ⚠️ 图片 AI 识别失败，保留原图：{exc.detail}")
+        try:
+            with Image.open(io.BytesIO(data)) as source:
+                grayscale = ImageOps.grayscale(ImageOps.exif_transpose(source))
+                if grayscale.getextrema()[0] >= 250:
+                    return []
+        except (UnidentifiedImageError, OSError):
+            return []
         return [{"type": "image", "bbox": [0, 0, 1, 1], "caption": caption or "原图", "data": data}]
 
 
@@ -1010,8 +1032,19 @@ async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[st
     """直接复用错题已有文字，只对其中的图片调用 AI，并保持原内容顺序。"""
     blocks: list[dict] = []
     answer_blocks: list[dict] = []
-    seen_sources: set[str] = set()
+    embedded_sources: set[str] = set()
+    image_cache: dict[str, list[dict]] = {}
     image_tasks: list[tuple[dict, str, str, list[dict]]] = []
+
+    def format_tags(value: Any) -> str:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return value.strip()
+        if isinstance(value, (list, tuple, set)):
+            return " · ".join(str(tag).strip() for tag in value if str(tag).strip())
+        return str(value or "").strip()
 
     def prepare_direct_html(value: Any) -> str:
         """保留常见上下标的公式语义，再交给富文本解析器处理。"""
@@ -1047,9 +1080,8 @@ async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[st
                     append_text(text)
                 pending.clear()
                 source = str(value or "").strip()
-                key = source
-                if key and key not in seen_sources:
-                    seen_sources.add(key)
+                if source:
+                    embedded_sources.add(source)
                     placeholder = {"type": "image-pending", "source": source}
                     image_tasks.append((placeholder, source, "题目配图", blocks))
                     blocks.append(placeholder)
@@ -1057,20 +1089,19 @@ async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[st
         if text:
             append_text(text)
 
-    append_text(str(item.get("title") or f"第 {index} 题"), "title")
+    append_text(f"第 {index} 题", "title")
     if options.get("include_meta", True):
         meta = "  |  ".join(filter(None, [
             str(item.get("subject") or ""), str(item.get("grade") or ""),
             str(item.get("question_type") or ""), f"难度 {item.get('difficulty', 3)}/5",
-            " · ".join(item.get("tags") or []),
+            format_tags(item.get("tags")),
         ]))
         if meta:
             append_text(meta, "meta")
     append_rich(item.get("question"), "题目")
     for source in item.get("image_urls") or []:
         source = str(source or "").strip()
-        if source and source not in seen_sources:
-            seen_sources.add(source)
+        if source and source not in embedded_sources:
             placeholder = {"type": "image-pending", "source": source}
             image_tasks.append((placeholder, source, "题目图片", blocks))
             blocks.append(placeholder)
@@ -1092,8 +1123,10 @@ async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[st
 
     for placeholder, source, caption, target_blocks in image_tasks:
         try:
-            data = await _read_ai_source_image(source)
-            ai_blocks = await _ai_blocks_for_image(data, caption, str(options.get("ai_model") or ""))
+            if source not in image_cache:
+                data = await _read_ai_source_image(source)
+                image_cache[source] = await _ai_blocks_for_image(data, caption, str(options.get("ai_model") or ""))
+            ai_blocks = [dict(block) for block in image_cache[source]]
         except HTTPException as exc:
             print(f"[ai-word] ⚠️ 图片读取失败，跳过图片：{exc.detail}")
             ai_blocks = []
