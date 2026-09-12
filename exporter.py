@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import io
-import json
 import re
 import subprocess
 import tempfile
@@ -15,7 +14,7 @@ from typing import Any
 from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 from reportlab.lib import colors
@@ -26,7 +25,13 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont
+try:
+    from latex2mathml.converter import convert as latex_to_mathml
+    from mathml2omml import convert as mathml_to_omml
+except ImportError:
+    latex_to_mathml = None
+    mathml_to_omml = None
 
 
 PAPER_MM = {
@@ -63,6 +68,7 @@ def plain_text(value: Any) -> str:
     parser = _TextExtractor()
     try:
         parser.feed(str(value))
+        parser.close()
         text = "".join(parser.parts)
     except Exception:
         text = re.sub(r"<[^>]+>", "", str(value))
@@ -93,9 +99,6 @@ _FORMULA_RE = re.compile(
     r"(\\\[.*?\\\]|\\\(.*?\\\)|\$\$.*?\$\$|\$(?=[^$\n]*?(?:\\[A-Za-z]+|[\^_=]))[^$\n]+\$)",
     re.S,
 )
-_FORMULA_IMAGE_CACHE: dict[tuple[str, bool], bytes | None] = {}
-
-
 def _formula_parts(text: str) -> list[tuple[str, str, bool]]:
     """拆分普通文字和四种常见公式定界符。"""
     parts: list[tuple[str, str, bool]] = []
@@ -119,57 +122,302 @@ def _formula_parts(text: str) -> list[tuple[str, str, bool]]:
     return parts or [("text", text, False)]
 
 
-def _render_formula_image(formula: str, display: bool) -> bytes | None:
-    """用本机 KaTeX 渲染公式截图，失败时由调用方保留原始 LaTeX。"""
-    key = (formula, display)
-    if key in _FORMULA_IMAGE_CACHE:
-        return _FORMULA_IMAGE_CACHE[key]
-    chrome = Path("/usr/bin/google-chrome")
-    katex = Path("/usr/share/javascript/katex/katex.js")
-    css = Path("/usr/share/javascript/katex/katex.min.css")
-    if not chrome.exists() or not katex.exists() or not css.exists():
-        _FORMULA_IMAGE_CACHE[key] = None
-        return None
-    try:
-        with tempfile.TemporaryDirectory(prefix="mistake-katex-") as directory:
-            root = Path(directory)
-            html_path = root / "formula.html"
-            png_path = root / "formula.png"
-            html_path.write_text(
-                "<!doctype html><meta charset='utf-8'>"
-                f"<link rel='stylesheet' href='file://{css}'>"
-                "<style>html,body{margin:0;background:#fff;}#math{display:inline-block;padding:8px 12px;color:#111;font-size:28px;}</style>"
-                f"<div id='math'></div><script src='file://{katex}'></script><script>"
-                f"katex.render({json.dumps(formula, ensure_ascii=False)},document.getElementById('math'),{{displayMode:{str(display).lower()},throwOnError:false,trust:true}});</script>",
-                encoding="utf-8",
-            )
-            result = subprocess.run(
-                [str(chrome), "--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
-                 "--allow-file-access-from-files", "--virtual-time-budget=800",
-                 "--window-size=1600,300", f"--screenshot={png_path}", f"file://{html_path}"],
-                capture_output=True, text=True, timeout=15, check=False,
-            )
-            if result.returncode != 0 or not png_path.exists():
-                raise RuntimeError(result.stderr[-200:])
-            with Image.open(png_path) as source:
-                image = source.convert("RGB")
-                background = Image.new("RGB", image.size, "white")
-                bbox = ImageChops.difference(image, background).getbbox()
-                if bbox:
-                    left, top, right, bottom = bbox
-                    image = image.crop((max(0, left - 3), max(0, top - 3), min(image.width, right + 3), min(image.height, bottom + 3)))
-                output = io.BytesIO()
-                image.save(output, format="PNG", optimize=True, dpi=(180, 180))
-                data = output.getvalue()
-            _FORMULA_IMAGE_CACHE[key] = data
-            return data
-    except Exception:
-        _FORMULA_IMAGE_CACHE[key] = None
-        return None
+_OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+_OMML_COMMANDS = {
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ϵ", "varepsilon": "ε",
+    "zeta": "ζ", "eta": "η", "theta": "θ", "vartheta": "ϑ", "iota": "ι", "kappa": "κ",
+    "lambda": "λ", "mu": "μ", "nu": "ν", "xi": "ξ", "omicron": "ο", "pi": "π",
+    "varpi": "ϖ", "rho": "ρ", "varrho": "ϱ", "sigma": "σ", "varsigma": "ς", "tau": "τ",
+    "upsilon": "υ", "phi": "ϕ", "varphi": "φ", "chi": "χ", "psi": "ψ", "omega": "ω",
+    "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ", "Lambda": "Λ", "Xi": "Ξ", "Pi": "Π",
+    "Sigma": "Σ", "Upsilon": "Υ", "Phi": "Φ", "Psi": "Ψ", "Omega": "Ω",
+    "infty": "∞", "partial": "∂", "nabla": "∇", "forall": "∀", "exists": "∃", "emptyset": "∅",
+    "pm": "±", "mp": "∓", "times": "×", "cdot": "⋅", "div": "÷", "ast": "∗", "star": "⋆",
+    "circ": "∘", "bullet": "∙", "le": "≤", "leq": "≤", "ge": "≥", "geq": "≥", "neq": "≠",
+    "ne": "≠", "approx": "≈", "equiv": "≡", "sim": "∼", "propto": "∝", "in": "∈", "notin": "∉",
+    "subset": "⊂", "supset": "⊃", "subseteq": "⊆", "supseteq": "⊇", "to": "→", "rightarrow": "→",
+    "leftarrow": "←", "leftrightarrow": "↔", "Rightarrow": "⇒", "Leftarrow": "⇐", "Leftrightarrow": "⇔",
+    "ldots": "…", "dots": "…", "cdots": "⋯", "vdots": "⋮", "ddots": "⋱", "angle": "∠",
+}
+_OMML_ESCAPES = {"%": "%", "_": "_", "#": "#", "$": "$", "&": "&", "{": "{", "}": "}", " ": " "}
+_OMML_NARY = {
+    "sum": "∑", "prod": "∏", "coprod": "∐", "int": "∫", "iint": "∬", "iiint": "∭",
+    "oint": "∮", "bigcup": "⋃", "bigcap": "⋂", "bigvee": "⋁", "bigwedge": "⋀",
+}
+_OMML_ACCENTS = {"hat": "^", "widehat": "^", "bar": "¯", "overline": "¯", "vec": "→", "tilde": "~"}
+_OMML_FUNCTIONS = {"sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan", "log", "ln", "lim", "max", "min", "det", "gcd"}
+
+
+def _omml_element(name: str):
+    return OxmlElement(f"m:{name}")
+
+
+def _omml_run(text: str):
+    run = _omml_element("r")
+    text_node = _omml_element("t")
+    if text[:1].isspace() or text[-1:].isspace():
+        text_node.set(qn("xml:space"), "preserve")
+    text_node.text = text
+    run.append(text_node)
+    return run
+
+
+def _omml_container(name: str, nodes: list):
+    container = _omml_element(name)
+    for node in nodes:
+        container.append(node)
+    return container
+
+
+def _omml_fraction(numerator: list, denominator: list, bar: bool = True):
+    fraction = _omml_element("f")
+    if not bar:
+        props = _omml_element("fPr")
+        fraction_type = _omml_element("type")
+        fraction_type.set(qn("m:val"), "noBar")
+        props.append(fraction_type)
+        fraction.append(props)
+    fraction.append(_omml_container("num", numerator))
+    fraction.append(_omml_container("den", denominator))
+    return fraction
+
+
+def _omml_radical(radicand: list, degree: list | None = None):
+    radical = _omml_element("rad")
+    if degree is None:
+        props = _omml_element("radPr")
+        hidden = _omml_element("degHide")
+        hidden.set(qn("m:val"), "1")
+        props.append(hidden)
+        radical.append(props)
+    else:
+        radical.append(_omml_container("deg", degree))
+    radical.append(_omml_container("e", radicand))
+    return radical
+
+
+def _omml_accent(nodes: list, character: str):
+    accent = _omml_element("acc")
+    props = _omml_element("accPr")
+    chr_node = _omml_element("chr")
+    chr_node.set(qn("m:val"), character)
+    props.append(chr_node)
+    accent.append(props)
+    accent.append(_omml_container("e", nodes))
+    return accent
+
+
+def _omml_nary(character: str):
+    nary = _omml_element("nary")
+    props = _omml_element("naryPr")
+    chr_node = _omml_element("chr")
+    chr_node.set(qn("m:val"), character)
+    props.append(chr_node)
+    nary.append(props)
+    nary.append(_omml_container("sub", []))
+    nary.append(_omml_container("sup", []))
+    nary.append(_omml_container("e", []))
+    return nary
+
+
+def _omml_delimiter(nodes: list, begin: str, end: str):
+    delimiter = _omml_element("d")
+    props = _omml_element("dPr")
+    begin_node = _omml_element("begChr")
+    begin_node.set(qn("m:val"), "" if begin == "." else begin)
+    end_node = _omml_element("endChr")
+    end_node.set(qn("m:val"), "" if end == "." else end)
+    props.extend([begin_node, end_node])
+    delimiter.append(props)
+    delimiter.append(_omml_container("e", nodes))
+    return delimiter
+
+
+def _omml_matrix(source: str, environment: str):
+    rows = re.split(r"\\\\|\\newline", source)
+    matrix = _omml_element("m")
+    for row in rows:
+        matrix_row = _omml_element("mr")
+        for cell in row.split("&"):
+            matrix_row.append(_omml_container("e", _LatexOMMLParser(cell.strip()).parse()))
+        matrix.append(matrix_row)
+    if environment in {"pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix"}:
+        delimiters = {"pmatrix": ("(", ")"), "bmatrix": ("[", "]"), "Bmatrix": ("{", "}"), "vmatrix": ("|", "|"), "Vmatrix": ("‖", "‖")}
+        begin, end = delimiters[environment]
+        return _omml_delimiter([matrix], begin, end)
+    return matrix
+
+
+class _LatexOMMLParser:
+    def __init__(self, text: str):
+        self.text = text
+        self.index = 0
+
+    def parse(self, stop: str | None = None) -> list:
+        nodes = []
+        while self.index < len(self.text):
+            if stop and self.text[self.index] == stop:
+                self.index += 1
+                break
+            if self.text.startswith(r"\\", self.index):
+                self.index += 2
+                if stop:
+                    break
+                nodes.append(_omml_run(" "))
+                continue
+            if self.text[self.index].isspace():
+                self.index += 1
+                continue
+            base = self._atom()
+            if base is None:
+                continue
+            sub = sup = None
+            while self.index < len(self.text) and self.text[self.index] in "^_":
+                marker = self.text[self.index]
+                self.index += 1
+                argument = self._argument()
+                if marker == "^":
+                    sup = argument
+                else:
+                    sub = argument
+            if sub is not None or sup is not None:
+                base = self._scripts(base, sub, sup)
+            nodes.append(base)
+        return nodes
+
+    def _argument(self) -> list:
+        while self.index < len(self.text) and self.text[self.index].isspace():
+            self.index += 1
+        if self.index >= len(self.text):
+            return []
+        if self.text[self.index] == "{":
+            self.index += 1
+            return self.parse("}")
+        node = self._atom()
+        return [node] if node is not None else []
+
+    def _raw_group(self) -> str:
+        while self.index < len(self.text) and self.text[self.index].isspace():
+            self.index += 1
+        if self.index >= len(self.text) or self.text[self.index] != "{":
+            return ""
+        start = self.index = self.index + 1
+        depth = 1
+        while self.index < len(self.text) and depth:
+            char = self.text[self.index]
+            if char == "{" and (self.index == 0 or self.text[self.index - 1] != "\\"):
+                depth += 1
+            elif char == "}" and (self.index == 0 or self.text[self.index - 1] != "\\"):
+                depth -= 1
+            self.index += 1
+        return self.text[start:self.index - 1]
+
+    def _environment(self, name: str) -> str:
+        marker = rf"\end{{{name}}}"
+        end = self.text.find(marker, self.index)
+        if end < 0:
+            source = self.text[self.index:]
+            self.index = len(self.text)
+            return source
+        source = self.text[self.index:end]
+        self.index = end + len(marker)
+        return source
+
+    def _scripts(self, base, sub: list | None, sup: list | None):
+        if sub is not None and sup is not None:
+            node = _omml_element("sSubSup")
+            node.extend([_omml_container("e", [base]), _omml_container("sub", sub), _omml_container("sup", sup)])
+            return node
+        if sub is not None:
+            node = _omml_element("sSub")
+            node.extend([_omml_container("e", [base]), _omml_container("sub", sub)])
+            return node
+        node = _omml_element("sSup")
+        node.extend([_omml_container("e", [base]), _omml_container("sup", sup or [])])
+        return node
+
+    def _atom(self):
+        char = self.text[self.index]
+        if char == "{":
+            self.index += 1
+            return _omml_container("e", self.parse("}"))
+        if char == "\\":
+            return self._command()
+        self.index += 1
+        return _omml_run(char)
+
+    def _command(self):
+        self.index += 1
+        if self.index >= len(self.text):
+            return _omml_run("\\")
+        if not self.text[self.index].isalpha():
+            escaped = self.text[self.index]
+            self.index += 1
+            return _omml_run(_OMML_ESCAPES.get(escaped, escaped))
+        start = self.index
+        while self.index < len(self.text) and self.text[self.index].isalpha():
+            self.index += 1
+        command = self.text[start:self.index]
+        if command in {"left", "right"}:
+            delimiter = self._delimiter()
+            return _omml_run("" if delimiter == "." else delimiter)
+        if command in {"frac", "dfrac", "tfrac"}:
+            return _omml_fraction(self._argument(), self._argument())
+        if command in {"binom", "dbinom"}:
+            return _omml_fraction(self._argument(), self._argument(), bar=False)
+        if command == "sqrt":
+            degree = None
+            if self.index < len(self.text) and self.text[self.index] == "[":
+                self.index += 1
+                degree = self.parse("]")
+            return _omml_radical(self._argument(), degree)
+        if command in _OMML_NARY:
+            return _omml_nary(_OMML_NARY[command])
+        if command in _OMML_ACCENTS:
+            return _omml_accent(self._argument(), _OMML_ACCENTS[command])
+        if command in {"text", "textnormal", "textrm", "mathrm", "mathbf", "mathit", "operatorname"}:
+            return _omml_run(self._raw_group())
+        if command in {"left", "right"}:
+            return _omml_run("")
+        if command == "begin":
+            environment = self._raw_group()
+            return _omml_matrix(self._environment(environment), environment)
+        if command in {"displaystyle", "textstyle", "scriptstyle", "scriptscriptstyle", "limits", "nolimits", "quad", "qquad", "!"}:
+            return _omml_run(" ")
+        if command in _OMML_FUNCTIONS:
+            return _omml_run(command)
+        return _omml_run(_OMML_COMMANDS.get(command, f"\\{command}"))
+
+    def _delimiter(self) -> str:
+        while self.index < len(self.text) and self.text[self.index].isspace():
+            self.index += 1
+        if self.index >= len(self.text):
+            return "."
+        if self.text[self.index] == "\\":
+            command = self._command()
+            text = "".join(node.findtext(f"{{{_OMML_NS}}}t") or "" for node in [command])
+            return text or "."
+        delimiter = self.text[self.index]
+        self.index += 1
+        return delimiter
+
+
+def _omml_formula(formula: str, display: bool = False):
+    if latex_to_mathml is None or mathml_to_omml is None:
+        raise RuntimeError("Word 原生公式依赖未安装，请执行 pip install -r requirements.txt")
+    mathml = latex_to_mathml(normalize_formula_text(formula), display="block" if display else "inline")
+    omml_text = mathml_to_omml(mathml)
+    omml_text = omml_text.replace("<m:oMath>", f'<m:oMath xmlns:m="{_OMML_NS}">', 1)
+    omml = parse_xml(omml_text.encode("utf-8"))
+    if display:
+        paragraph = _omml_element("oMathPara")
+        paragraph.append(omml)
+        return paragraph
+    return omml
 
 
 def _append_formula_paragraph(document: Document, text: str, usable_width: float, font_size: float) -> None:
-    """添加可混排的文字/公式段落；公式优先视觉正确，文字保持可编辑。"""
+    """添加可混排的文字与 Word 原生公式段落。"""
     for line in normalize_formula_text(text).splitlines() or [""]:
         paragraph = document.add_paragraph()
         paragraph.paragraph_format.keep_together = True
@@ -183,19 +431,9 @@ def _append_formula_paragraph(document: Document, text: str, usable_width: float
                 if value:
                     paragraph.add_run(value)
                 continue
-            image = _render_formula_image(value, display)
-            if image:
-                run = paragraph.add_run()
-                # 公式截图尺寸按 KaTeX 结果等比缩放，避免撑破页面。
-                with Image.open(io.BytesIO(image)) as formula_image:
-                    ratio = formula_image.width / max(1, formula_image.height)
-                    height_pt = font_size * (1.9 if display else 1.35)
-                    width_cm = min(usable_width, max(0.45, height_pt * ratio / 28.35))
-                run.add_picture(io.BytesIO(image), width=Cm(width_cm))
-                # 保留源 LaTeX 作为图片说明，便于后续从 Word 中恢复或编辑公式。
-                for doc_pr in run._r.xpath(".//wp:docPr"):
-                    doc_pr.set("descr", f"LaTeX: {value}")
-            else:
+            try:
+                paragraph._p.append(_omml_formula(value, display))
+            except Exception:
                 paragraph.add_run((r"\[" if display else r"\(") + value + (r"\]" if display else r"\)"))
 
 
@@ -549,6 +787,7 @@ def build_docx(items: list[dict[str, Any]], raw_options: dict[str, Any] | None) 
     summary = document.add_paragraph(f"共 {len(items)} 道错题")
     summary.alignment = WD_ALIGN_PARAGRAPH.CENTER
     document.add_paragraph()
+    usable_width = max(6.0, width - opt["margin_left"] - opt["margin_right"])
     for index, item in enumerate(items, 1):
         heading = document.add_heading(f"{index}. {plain_text(item.get('title')) or '错题'}", level=1)
         heading.paragraph_format.keep_with_next = True
@@ -559,21 +798,26 @@ def build_docx(items: list[dict[str, Any]], raw_options: dict[str, Any] | None) 
                 p = document.add_paragraph(meta)
                 p.style = styles["Subtitle"]
         document.add_heading("题目", level=2)
-        document.add_paragraph(plain_text(item.get("question")) or "（题目图片见原记录）")
+        question = plain_text(item.get("question"))
+        if question:
+            _append_formula_paragraph(document, question, usable_width, opt["font_size"])
+        else:
+            document.add_paragraph("（题目图片见原记录）")
         for _ in range(opt["blank_lines"]):
             document.add_paragraph("________________________________________________________________")
         if opt["include_my_answer"] and plain_text(item.get("my_answer")):
             document.add_heading("原作答", level=2)
-            document.add_paragraph(plain_text(item.get("my_answer")))
+            _append_formula_paragraph(document, plain_text(item.get("my_answer")), usable_width, opt["font_size"])
         if opt["answer_mode"] == "inline":
             document.add_heading("答案", level=2)
-            document.add_paragraph(plain_text(item.get("answer")) or "（暂无）")
+            answer = plain_text(item.get("answer"))
+            _append_formula_paragraph(document, answer or "（暂无）", usable_width, opt["font_size"])
             if opt["include_analysis"] and plain_text(item.get("analysis")):
                 document.add_heading("解析", level=2)
-                document.add_paragraph(plain_text(item.get("analysis")))
+                _append_formula_paragraph(document, plain_text(item.get("analysis")), usable_width, opt["font_size"])
         if opt["include_note"] and plain_text(item.get("note")):
             document.add_heading("复盘笔记", level=2)
-            document.add_paragraph(plain_text(item.get("note")))
+            _append_formula_paragraph(document, plain_text(item.get("note")), usable_width, opt["font_size"])
         if opt["page_break_each"] and index != len(items):
             document.add_page_break()
         elif index != len(items):
@@ -583,10 +827,11 @@ def build_docx(items: list[dict[str, Any]], raw_options: dict[str, Any] | None) 
         document.add_heading("参考答案与解析", 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
         for index, item in enumerate(items, 1):
             document.add_heading(f"第 {index} 题", level=1)
-            document.add_paragraph(plain_text(item.get("answer")) or "（暂无答案）")
+            answer = plain_text(item.get("answer"))
+            _append_formula_paragraph(document, answer or "（暂无答案）", usable_width, opt["font_size"])
             if opt["include_analysis"] and plain_text(item.get("analysis")):
                 document.add_heading("解析", level=2)
-                document.add_paragraph(plain_text(item.get("analysis")))
+                _append_formula_paragraph(document, plain_text(item.get("analysis")), usable_width, opt["font_size"])
     if opt["page_numbers"]:
         _word_page_number(section.footer.paragraphs[0])
     output = io.BytesIO()
