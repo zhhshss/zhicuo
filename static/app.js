@@ -23,6 +23,10 @@ const state = {
 
 const SUBJECT_ICONS = { '语文': '文', '数学': '数', '英语': '英', '物理': '理', '化学': '化', '生物': '生', '政治': '政', '历史': '史', '地理': '地' };
 
+function renderIcons() {
+  if (window.lucide?.createIcons) window.lucide.createIcons();
+}
+
 function escapeHTML(value = '') {
   return String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 }
@@ -275,24 +279,28 @@ async function loadLibrary() {
 function renderLibrary() {
   const grid = $('#libraryGrid');
   if (!state.library.items.length) {
-    grid.innerHTML = '<div class="empty"><div class="empty-icon">✓</div><h2>这里还很干净</h2><p>试试调整筛选条件，或录入一道新的错题。</p><button class="btn btn-primary" data-action="new">＋ 录入错题</button></div>';
+    grid.innerHTML = '<div class="empty"><div class="empty-icon"><i data-lucide="inbox"></i></div><h2>这里还很干净</h2><p>试试调整筛选条件，或录入一道新的错题。</p><button class="btn btn-primary" data-action="new"><i data-lucide="plus"></i>录入错题</button></div>';
   } else {
     grid.innerHTML = state.library.items.map(item => {
       const title = item.title || plainText(item.question).slice(0, 36) || '未命名错题';
       const tags = [...(item.knowledge_points || []), ...(item.tags || [])].slice(0, 4);
       return `<article class="card mistake-card" data-detail="${item.id}">
         <input class="mistake-check" type="checkbox" data-select="${item.id}" ${state.selected.has(item.id) ? 'checked' : ''} aria-label="选择错题">
-        <div class="mistake-top"><span class="pill">${escapeHTML(item.subject)}</span><span class="pill coral">${escapeHTML(item.error_type)}</span><span class="star ${item.is_starred ? 'on' : ''}">★</span></div>
+        <div class="mistake-top"><span class="pill">${escapeHTML(item.subject)}</span><span class="pill coral">${escapeHTML(item.error_type)}</span><span class="star ${item.is_starred ? 'on' : ''}" aria-label="${item.is_starred ? '已收藏' : '未收藏'}"><i data-lucide="star"></i></span></div>
         <h2 class="mistake-title">${escapeHTML(title)}</h2><div class="mistake-excerpt">${escapeHTML(plainText(item.question))}</div>
         <div class="tag-list">${tags.map(tag => `<span class="tiny-tag">${escapeHTML(tag)}</span>`).join('')}</div>
         <div class="mastery-line"><div class="mastery-head"><span>掌握度</span><b>${item.mastery}%</b></div><div class="mastery-track"><div class="mastery-fill" style="width:${item.mastery}%"></div></div></div>
-        <div class="mistake-foot"><span>难度 ${'●'.repeat(item.difficulty)}${'○'.repeat(5-item.difficulty)}</span><span>下次 ${formatDate(item.next_review_at)}</span></div>
+        <div class="mistake-foot"><span class="difficulty" aria-label="难度 ${item.difficulty} / 5"><span class="difficulty-dots">${Array.from({ length: 5 }, (_, index) => `<i class="${index < item.difficulty ? 'active' : ''}"></i>`).join('')}</span><span>难度 ${item.difficulty} / 5</span></span><span>下次 ${formatDate(item.next_review_at)}</span></div>
       </article>`;
     }).join('');
   }
+  const query = $('#libQuery').value.trim();
+  const activeFilters = [$('#filterSubject').value, $('#filterNotebook').value, $('#filterError').value].filter(Boolean).length;
+  $('#librarySummary').innerHTML = `<strong>${state.library.total}</strong> 道错题${query ? ` · 搜索“${escapeHTML(query)}”` : ''}${activeFilters ? ` · 已启用 ${activeFilters} 个筛选` : ''}`;
   const pages = Math.max(1, Math.ceil(state.library.total / state.library.limit));
-  $('#pagination').innerHTML = `<button class="btn btn-sm btn-secondary" data-page="${state.library.page - 1}" ${state.library.page <= 1 ? 'disabled' : ''}>← 上一页</button><span>第 ${state.library.page} / ${pages} 页 · 共 ${state.library.total} 题</span><button class="btn btn-sm btn-secondary" data-page="${state.library.page + 1}" ${state.library.page >= pages ? 'disabled' : ''}>下一页 →</button>`;
+  $('#pagination').innerHTML = `<button class="btn btn-sm btn-secondary" data-page="${state.library.page - 1}" ${state.library.page <= 1 ? 'disabled' : ''}><i data-lucide="chevron-left"></i>上一页</button><span>第 ${state.library.page} / ${pages} 页 · 共 ${state.library.total} 题</span><button class="btn btn-sm btn-secondary" data-page="${state.library.page + 1}" ${state.library.page >= pages ? 'disabled' : ''}>下一页<i data-lucide="chevron-right"></i></button>`;
   renderBulkBar();
+  renderIcons();
 }
 
 function renderBulkBar() {
@@ -319,7 +327,8 @@ function resetEditor(item = null) {
 }
 
 function renderEditImages() {
-  $('#editImageStrip').innerHTML = state.editImageUrls.map((url, index) => `<div class="preview" style="min-width:140px"><img src="${escapeHTML(url)}"><button type="button" data-remove-edit-image="${index}">×</button></div>`).join('');
+  $('#editImageStrip').innerHTML = state.editImageUrls.map((url, index) => `<div class="preview" style="min-width:140px"><img src="${escapeHTML(url)}"><button type="button" data-remove-edit-image="${index}" aria-label="移除图片"><i data-lucide="x"></i></button></div>`).join('');
+  renderIcons();
 }
 
 function editorPayload() {
@@ -458,7 +467,8 @@ function addCaptureFiles(list) {
 }
 
 function renderCapturePreviews() {
-  $('#capturePreviews').innerHTML = state.captureFiles.map((file, index) => `<div class="preview"><img src="${URL.createObjectURL(file)}"><button data-remove-capture="${index}">×</button></div>`).join('');
+  $('#capturePreviews').innerHTML = state.captureFiles.map((file, index) => `<div class="preview"><img src="${URL.createObjectURL(file)}"><button data-remove-capture="${index}" aria-label="移除图片"><i data-lucide="x"></i></button></div>`).join('');
+  renderIcons();
 }
 
 async function runCapture() {
@@ -615,13 +625,13 @@ function renderRegionEditor() {
         <div class="region-page-nav">${draft.pages.map((_, index) => `<button class="btn btn-sm ${index === draft.pageIndex ? 'btn-primary' : 'btn-secondary'}" data-region-page="${index}">第 ${index + 1} 页</button>`).join('')}</div>
       </div>
       <div class="region-toolbar">
-        <button class="btn btn-sm btn-secondary" data-region-action="add">＋ 新框</button>
+        <button class="btn btn-sm btn-secondary" data-region-action="add"><i data-lucide="plus"></i>新框</button>
         <button class="btn btn-sm btn-secondary" data-region-action="split">拆分</button>
         <button class="btn btn-sm btn-secondary" data-region-action="merge">合并下一题</button>
         <button class="btn btn-sm btn-secondary" data-region-action="delete">删除</button>
         <button class="btn btn-sm btn-secondary" data-region-action="sort">按位置排序</button>
-        <button class="btn btn-sm btn-secondary" data-region-action="undo" ${state.regionHistory.length ? '' : 'disabled'}>↶ 撤销</button>
-        <button class="btn btn-sm btn-primary" id="confirmRegions">确认并逐题搜</button>
+        <button class="btn btn-sm btn-secondary" data-region-action="undo" ${state.regionHistory.length ? '' : 'disabled'}><i data-lucide="undo-2"></i>撤销</button>
+        <button class="btn btn-sm btn-primary" id="confirmRegions"><i data-lucide="check"></i>确认并逐题搜</button>
       </div>
       <div class="region-editor-layout">
         <div>
@@ -634,10 +644,10 @@ function renderRegionEditor() {
         <aside class="region-panel">
           <b>${selected ? `正在编辑第 ${selected.detectedNumber} 题` : '请选择题框'}</b>
           <div class="region-nudges">
-            <button class="btn btn-sm btn-secondary" data-region-action="nudge-up">↑</button>
-            <button class="btn btn-sm btn-secondary" data-region-action="nudge-down">↓</button>
-            <button class="btn btn-sm btn-secondary" data-region-action="nudge-left">←</button>
-            <button class="btn btn-sm btn-secondary" data-region-action="nudge-right">→</button>
+            <button class="btn btn-sm btn-secondary" data-region-action="nudge-up" aria-label="向上移动"><i data-lucide="chevron-up"></i></button>
+            <button class="btn btn-sm btn-secondary" data-region-action="nudge-down" aria-label="向下移动"><i data-lucide="chevron-down"></i></button>
+            <button class="btn btn-sm btn-secondary" data-region-action="nudge-left" aria-label="向左移动"><i data-lucide="chevron-left"></i></button>
+            <button class="btn btn-sm btn-secondary" data-region-action="nudge-right" aria-label="向右移动"><i data-lucide="chevron-right"></i></button>
             <button class="btn btn-sm btn-secondary" data-region-action="expand">放大</button>
             <button class="btn btn-sm btn-secondary" data-region-action="contract">缩小</button>
           </div>
@@ -647,6 +657,7 @@ function renderRegionEditor() {
       </div>
       <div class="card-note" style="margin-top:10px">当前检测：${page.detector}${warn}</div>
     </article>`;
+  renderIcons();
   bindRegionOverlay();
   paintRegionBoxes();
 }
@@ -882,11 +893,13 @@ async function captureSearch(fileIds, preparedFiles, useRows = false) {
 function renderRecognized(questions) {
   const unique = deduplicateQuestions(questions);
   if (!unique.length) {
-    $('#captureResults').innerHTML = '<div class="card empty"><div class="empty-icon">?</div><h2>暂未识别到题目</h2><p>可以切换“AI 解原题”模式再试一次。</p></div>';
+    $('#captureResults').innerHTML = '<div class="card empty"><div class="empty-icon"><i data-lucide="search-x"></i></div><h2>暂未识别到题目</h2><p>可以切换“AI 解原题”模式再试一次。</p></div>';
+    renderIcons();
     return;
   }
-  $('#captureResults').innerHTML = `<div class="card-head"><div><h2 class="card-title">识别到 ${unique.length} 道题</h2><div class="card-note">已按题框裁剪并搜题，请核对后收入错题库</div></div><button class="btn btn-primary btn-sm" id="saveAllRecognized">全部收入</button></div>` + unique.map((q, index) => recognizedCard(q, index)).join('');
+  $('#captureResults').innerHTML = `<div class="card-head"><div><h2 class="card-title">识别到 ${unique.length} 道题</h2><div class="card-note">已按题框裁剪并搜题，请核对后收入错题库</div></div><button class="btn btn-primary btn-sm" id="saveAllRecognized"><i data-lucide="check-check"></i>全部收入</button></div>` + unique.map((q, index) => recognizedCard(q, index)).join('');
   state.recognized = unique;
+  renderIcons();
   scheduleMath($('#captureResults'));
   toast(`成功识别 ${unique.length} 道题`);
 }
@@ -937,7 +950,7 @@ function deduplicateQuestions(questions) {
 
 function recognizedCard(question, index) {
   const points = (question.knowledgePoints || []).map(point => point.name || point).filter(Boolean);
-  return `<article class="result-item"><div class="result-item-head"><div><b>第 ${question.detectedNumber || index + 1} 题</b> <span class="pill">${escapeHTML(question.subject || '未分类')}</span></div><button class="btn btn-sm btn-primary" data-save-recognized="${index}">＋ 收入错题本</button></div>${question.cropImageUrl ? `<img src="${question.cropImageUrl}" style="width:100%;max-height:210px;object-fit:contain;margin-top:10px;border-radius:9px;background:#f5f7f6">` : ''}<div class="rich rich-box">${sanitizeHTML(question.questionContent) || '（题目见上方裁剪图）'}</div><details style="margin-top:10px"><summary style="cursor:pointer;color:var(--teal)">查看答案与解析</summary><div class="rich rich-box"><b>答案：</b>${sanitizeHTML(question.questionAnswer) || '暂无'}<hr class="divider"><b>解析：</b>${sanitizeHTML(question.questionAnalysis) || '暂无'}</div></details><div class="tag-list">${points.map(point => `<span class="tiny-tag">${escapeHTML(point)}</span>`).join('')}</div></article>`;
+  return `<article class="result-item"><div class="result-item-head"><div><b>第 ${question.detectedNumber || index + 1} 题</b> <span class="pill">${escapeHTML(question.subject || '未分类')}</span></div><button class="btn btn-sm btn-primary" data-save-recognized="${index}"><i data-lucide="plus"></i>收入错题本</button></div>${question.cropImageUrl ? `<img src="${question.cropImageUrl}" style="width:100%;max-height:210px;object-fit:contain;margin-top:10px;border-radius:9px;background:#f5f7f6">` : ''}<div class="rich rich-box">${sanitizeHTML(question.questionContent) || '（题目见上方裁剪图）'}</div><details style="margin-top:10px"><summary style="cursor:pointer;color:var(--teal)">查看答案与解析</summary><div class="rich rich-box"><b>答案：</b>${sanitizeHTML(question.questionAnswer) || '暂无'}<hr class="divider"><b>解析：</b>${sanitizeHTML(question.questionAnalysis) || '暂无'}</div></details><div class="tag-list">${points.map(point => `<span class="tiny-tag">${escapeHTML(point)}</span>`).join('')}</div></article>`;
 }
 
 function recognizedToItem(question, index = 0) {
@@ -968,7 +981,8 @@ async function saveAllRecognized() {
 
 async function captureSolve(fileIds) {
   $('#captureStatus').textContent = 'AI 正在阅读题目并生成解析…';
-  $('#captureResults').innerHTML = '<article class="result-item"><div class="result-item-head"><b>AI 解题结果</b><button class="btn btn-sm btn-primary hidden" id="saveSolveResult">＋ 收入错题本</button></div><div class="rich rich-box" id="solveOutput">正在思考…</div></article>';
+  $('#captureResults').innerHTML = '<article class="result-item"><div class="result-item-head"><b>AI 解题结果</b><button class="btn btn-sm btn-primary hidden" id="saveSolveResult"><i data-lucide="plus"></i>收入错题本</button></div><div class="rich rich-box" id="solveOutput">正在思考…</div></article>';
+  renderIcons();
   const response = await fetch('/api/solve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileIds, names: state.captureFiles.map(file => file.name), mode: $('#solveMode').value, enableModelThinking: $('#deepThink').checked }) });
   if (!response.ok) { let info; try { info = await response.json(); } catch { info = {}; } throw new Error(info.detail || `AI 解题失败（${response.status}）`); }
   const reader = response.body.getReader(), decoder = new TextDecoder();
@@ -1008,13 +1022,14 @@ async function loadReview(shuffle = false) {
 function renderReview() {
   const { items, index, revealed } = state.review;
   if (!items.length) {
-    $('#reviewArea').innerHTML = '<div class="card empty"><div class="empty-icon">✓</div><h2>今日复习完成</h2><p>没有到期错题。可以去错题库自由浏览，或继续整理新题。</p><button class="btn btn-primary" data-view-jump="library">浏览错题库</button></div>'; return;
+    $('#reviewArea').innerHTML = '<div class="card empty"><div class="empty-icon"><i data-lucide="check-circle-2"></i></div><h2>今日复习完成</h2><p>没有到期错题。可以去错题库自由浏览，或继续整理新题。</p><button class="btn btn-primary" data-view-jump="library"><i data-lucide="library"></i>浏览错题库</button></div>'; renderIcons(); return;
   }
   if (index >= items.length) {
-    $('#reviewArea').innerHTML = `<div class="card empty"><div class="empty-icon">★</div><h2>本轮复习完成</h2><p>已完成 ${items.length} 道错题的主动回忆，做得不错。</p><button class="btn btn-primary" data-view-jump="dashboard">返回概览</button></div>`; return;
+    $('#reviewArea').innerHTML = `<div class="card empty"><div class="empty-icon"><i data-lucide="sparkles"></i></div><h2>本轮复习完成</h2><p>已完成 ${items.length} 道错题的主动回忆，做得不错。</p><button class="btn btn-primary" data-view-jump="dashboard"><i data-lucide="layout-dashboard"></i>返回概览</button></div>`; renderIcons(); return;
   }
   const item = items[index];
   $('#reviewArea').innerHTML = `<div class="review-progress"><b>${index + 1} / ${items.length}</b><div class="progress"><span style="width:${(index + 1) / items.length * 100}%"></span></div><button class="btn btn-sm btn-ghost" data-detail="${item.id}">详情</button></div><article class="card review-card"><div class="review-meta"><span class="pill">${escapeHTML(item.subject)}</span><span class="pill coral">${escapeHTML(item.error_type)}</span>${(item.knowledge_points || []).map(point => `<span class="tiny-tag">${escapeHTML(point)}</span>`).join('')}</div>${item.image_urls?.length ? `<div class="image-strip">${item.image_urls.map(url => `<img src="${escapeHTML(url)}">`).join('')}</div>` : ''}<div class="review-question rich">${sanitizeHTML(item.question) || '题目见图片'}</div>${revealed ? `<div class="answer-panel"><b>正确答案</b><div class="rich" style="margin-top:7px">${sanitizeHTML(item.answer) || '暂无答案'}</div>${item.analysis ? `<hr class="divider"><b>解析</b><div class="rich" style="margin-top:7px">${sanitizeHTML(item.analysis)}</div>` : ''}</div><p style="text-align:center;margin:18px 0 4px;color:var(--muted)">这道题你掌握得怎么样？</p><div class="review-actions"><button class="rating-btn" data-rating="0"><b>忘记了</b><small>明天再复习</small></button><button class="rating-btn" data-rating="1"><b>有点难</b><small>2 天后</small></button><button class="rating-btn" data-rating="2"><b>掌握了</b><small>4 天后</small></button><button class="rating-btn" data-rating="3"><b>很轻松</b><small>7 天后</small></button></div>` : `<button class="btn btn-primary" id="revealAnswer" style="display:flex;margin:35px auto 0">查看答案</button>`}</article>`;
+  renderIcons();
   scheduleMath($('#reviewArea'));
 }
 
@@ -1108,8 +1123,9 @@ function renderExportJobStatus() {
   const activeTypes = new Set(jobs.filter(job => ['queued', 'running'].includes(job.status)).map(job => job.type));
   if ($('#downloadDocx')) $('#downloadDocx').disabled = activeTypes.has('camscanner');
   if ($('#downloadPdf')) $('#downloadPdf').disabled = activeTypes.has('pdf');
-  if ($('#downloadDocx')) $('#downloadDocx').textContent = activeTypes.has('camscanner') ? 'OCR Word 后台处理中' : 'W OCR Word';
-  if ($('#downloadPdf')) $('#downloadPdf').textContent = activeTypes.has('pdf') ? 'PDF 后台处理中' : '▣ 导出 PDF';
+  if ($('#downloadDocx')) $('#downloadDocx').innerHTML = activeTypes.has('camscanner') ? '<i data-lucide="loader-circle"></i>OCR Word 后台处理中' : '<i data-lucide="file-text"></i>OCR Word';
+  if ($('#downloadPdf')) $('#downloadPdf').innerHTML = activeTypes.has('pdf') ? '<i data-lucide="loader-circle"></i>PDF 后台处理中' : '<i data-lucide="file-down"></i>导出 PDF';
+  renderIcons();
 }
 
 function triggerExportDownload(job) {
@@ -1200,7 +1216,7 @@ async function runAiWordExport(triggerButton = null) {
   if (!state.captureFiles.length && triggerButton?.id === 'aiWordRun') return toast('请先选择要识别的整页图片', 'error');
   if (!state.captureFiles.length && !$('#exportScope')) return toast('请先选择要识别的整页图片', 'error');
   const button = triggerButton || $('#aiWordRun') || $('#exportAiWord');
-  const buttonLabel = button?.id === 'exportAiWord' ? '✦ AI 识别 Word' : '▣ AI 识别文字与图片，生成 Word';
+  const buttonLabel = button?.id === 'exportAiWord' ? '<i data-lucide="sparkles"></i>AI 识别 Word' : '<i data-lucide="file-text"></i>AI 识别文字与图片，生成 Word';
   if (button) { button.disabled = true; button.textContent = '正在提交 AI OCR…'; }
   const form = new FormData();
   if (state.captureFiles.length) {
@@ -1208,7 +1224,7 @@ async function runAiWordExport(triggerButton = null) {
   } else {
     const request = exportRequest();
     if ($('#exportScope')?.value === 'selected' && !request.ids.length) {
-      if (button) { button.disabled = false; button.textContent = buttonLabel; }
+      if (button) { button.disabled = false; button.innerHTML = buttonLabel; renderIcons(); }
       return toast('请先在错题库选择要导出的题目', 'error');
     }
     let sourceItems;
@@ -1219,7 +1235,7 @@ async function runAiWordExport(triggerButton = null) {
       sourceItems = (await api(`/api/mistakes?${params}`)).items;
     }
     if (!sourceItems?.length) {
-      if (button) { button.disabled = false; button.textContent = buttonLabel; }
+      if (button) { button.disabled = false; button.innerHTML = buttonLabel; renderIcons(); }
       return toast('当前范围没有可导出的错题', 'error');
     }
     form.append('items', JSON.stringify(sourceItems));
@@ -1247,7 +1263,7 @@ async function runAiWordExport(triggerButton = null) {
   } catch (error) {
     toast(error.message, 'error');
   } finally {
-    if (button) { button.disabled = false; button.textContent = buttonLabel; }
+    if (button) { button.disabled = false; button.innerHTML = buttonLabel; renderIcons(); }
   }
 }
 
@@ -1301,11 +1317,14 @@ function bindEvents() {
     const saveResult = event.target.closest('[data-save-recognized]'); if (saveResult) await saveRecognized(Number(saveResult.dataset.saveRecognized));
     const rating = event.target.closest('[data-rating]'); if (rating) await rateReview(rating.dataset.rating);
   });
-  $('#mobileMenu').onclick = () => $('#sidebar').classList.toggle('open');
+  const toggleSidebar = open => $('#sidebar').classList.toggle('open', open ?? !$('#sidebar').classList.contains('open'));
+  $('#mobileMenu').onclick = () => toggleSidebar();
+  $('#sidebarScrim').onclick = () => toggleSidebar(false);
   $('#editorForm').addEventListener('submit', saveEditor);
   $('#detailDelete').onclick = deleteDetail; $('#detailDuplicate').onclick = duplicateDetail; $('#detailArchive').onclick = archiveDetail;
   $('#detailEdit').onclick = () => { const item = state.detail; closeModal('detailModal'); resetEditor(item); openModal('editorModal'); };
   $('#captureDrop').onclick = () => $('#captureFiles').click();
+  $('#captureDrop').onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); $('#captureFiles').click(); } };
   $('#captureFiles').onchange = event => { addCaptureFiles(event.target.files); event.target.value = ''; };
   $('#captureDrop').ondragover = event => { event.preventDefault(); $('#captureDrop').classList.add('drag'); };
   $('#captureDrop').ondragleave = () => $('#captureDrop').classList.remove('drag');
@@ -1331,8 +1350,20 @@ function bindEvents() {
   });
   const libraryChanged = debounce(() => { state.library.page = 1; loadLibrary(); }, 260);
   $('#libQuery').addEventListener('input', libraryChanged);
+  $('#clearFilters').onclick = () => {
+    $('#libQuery').value = '';
+    ['filterSubject', 'filterNotebook', 'filterError'].forEach(id => { $(`#${id}`).value = ''; });
+    $('#filterSort').value = 'updated_desc';
+    state.library.status = 'active';
+    $$('.filter-tab').forEach(node => node.classList.toggle('active', node.dataset.status === 'active'));
+    state.library.page = 1;
+    loadLibrary();
+  };
   ['filterSubject','filterNotebook','filterError','filterSort'].forEach(id => $(`#${id}`).addEventListener('change', () => { state.library.page = 1; loadLibrary(); }));
   $$('.filter-tab').forEach(button => button.onclick = () => { state.library.status = button.dataset.status; $$('.filter-tab').forEach(node => node.classList.toggle('active', node === button)); state.library.page = 1; loadLibrary(); });
+  const syncGlobalSearch = () => $('#globalSearchClear').classList.toggle('hidden', !$('#globalSearch').value);
+  $('#globalSearch').addEventListener('input', syncGlobalSearch);
+  $('#globalSearchClear').onclick = () => { $('#globalSearch').value = ''; syncGlobalSearch(); $('#globalSearch').focus(); };
   $('#globalSearch').addEventListener('keydown', event => { if (event.key === 'Enter') { $('#libQuery').value = event.target.value; switchView('library'); } });
   document.addEventListener('keydown', event => {
     const editingRegion = state.regionDraft && $('#regionOverlay') && !event.target.matches('input,textarea,select');
@@ -1375,6 +1406,7 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
+  renderIcons();
   resumeExportJobs();
   $('#uid').value = localStorage.getItem('mistake_uid') || '';
   try {
