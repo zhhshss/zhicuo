@@ -45,7 +45,7 @@ QUESTION_OCR_SCRIPT = Path(__file__).parent / "question_regions.py"
 CLIPROXY_BASE_URL = os.environ.get("MISTAKE_BOOK_CLIPROXY_URL", "http://127.0.0.1:50002").rstrip("/")
 CLIPROXY_MODEL = os.environ.get("MISTAKE_BOOK_SEGMENT_MODEL", "pp/gemini-3.8-flash").strip()
 CLIPROXY_FALLBACK_MODEL = os.environ.get("MISTAKE_BOOK_CLIPROXY_FALLBACK_MODEL", "pp/gemini-3.7-flash").strip()
-CLIPROXY_SEGMENT_TIMEOUT = float(os.environ.get("MISTAKE_BOOK_SEGMENT_TIMEOUT", "8"))
+CLIPROXY_SEGMENT_TIMEOUT = float(os.environ.get("MISTAKE_BOOK_SEGMENT_TIMEOUT", "30"))
 CLIPROXY_AI_WORD_TIMEOUT = float(os.environ.get("MISTAKE_BOOK_AI_WORD_TIMEOUT", "60"))
 CLIPROXY_AI_WORD_RETRIES = max(0, min(3, int(os.environ.get("MISTAKE_BOOK_AI_WORD_RETRIES", "2"))))
 CLIPROXY_CONFIG = Path(os.environ.get("MISTAKE_BOOK_CLIPROXY_CONFIG", "/root/.cli-proxy-api/config.yaml"))
@@ -762,9 +762,13 @@ async def detect_question_regions_ai(data: bytes, width: int, height: int, reque
     }
     headers = {"Authorization": f"Bearer {load_cliproxy_api_key()}", "Content-Type": "application/json"}
     last_error = "模型返回空内容"
+    started_at = time.perf_counter()
+    print(f"[regions-ai] request -> model={model}, image={len(data)}B, size={width}x{height}, timeout={CLIPROXY_SEGMENT_TIMEOUT:g}s")
     async with httpx.AsyncClient(timeout=httpx.Timeout(CLIPROXY_SEGMENT_TIMEOUT, connect=5), trust_env=False) as client:
         try:
             response = await client.post(f"{CLIPROXY_BASE_URL}/v1/responses", headers=headers, json=request)
+            elapsed = time.perf_counter() - started_at
+            print(f"[regions-ai] response <- status={response.status_code}, elapsed={elapsed:.2f}s")
             if response.status_code != 200:
                 detail = response.text[:300]
                 last_error = f"CLIProxyAPI 返回 {response.status_code}：{detail}"
@@ -779,9 +783,12 @@ async def detect_question_regions_ai(data: bytes, width: int, height: int, reque
                         "rawNumbers": [], "finalNumbers": [region["detectedNumber"] for region in regions],
                     }
         except httpx.TimeoutException:
-            last_error = f"{model} 视觉请求超过 {CLIPROXY_SEGMENT_TIMEOUT:g} 秒"
+            elapsed = time.perf_counter() - started_at
+            last_error = f"{model} 视觉请求超过 {CLIPROXY_SEGMENT_TIMEOUT:g} 秒（实际等待 {elapsed:.1f} 秒）"
+            print(f"[regions-ai] timeout <- model={model}, elapsed={elapsed:.2f}s")
         except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
             last_error = str(exc) or type(exc).__name__
+            print(f"[regions-ai] error <- model={model}, elapsed={time.perf_counter() - started_at:.2f}s, detail={last_error}")
     raise HTTPException(502, f"AI 拆题失败：{last_error}")
 
 
@@ -1119,6 +1126,7 @@ async def api_question_regions_ai(file: UploadFile = File(...), model: str = For
     if len(data) > 50 * 1024 * 1024:
         raise HTTPException(400, "原图过大（最大 50MB）")
     data, image_info = optimize_image(data, max_side=1800, target_bytes=1_500_000)
+    print(f"[regions-ai] start {file.filename}: original={image_info['originalSize']}B, optimized={image_info['size']}B, size={image_info['width']}x{image_info['height']}, model={model or CLIPROXY_MODEL}")
     ai_data = data
     ai_width, ai_height = image_info["width"], image_info["height"]
     ai_rotated = ai_width > ai_height * 1.12
@@ -1135,6 +1143,7 @@ async def api_question_regions_ai(file: UploadFile = File(...), model: str = For
             result["rotated"] = ai_rotated
             return "ai", result, None
         except HTTPException as exc:
+            print(f"[regions-ai] failed {file.filename}: {exc.detail}")
             return "ai", None, exc
 
     async def run_ocr() -> tuple[str, dict | None, HTTPException | None]:

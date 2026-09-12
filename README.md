@@ -78,6 +78,8 @@ MISTAKE_BOOK_AUTH_TOKEN='至少 16 位的随机密钥' bash "run.sh"
 `MISTAKE_BOOK_CLIPROXY_URL`、`MISTAKE_BOOK_CLIPROXY_API_KEY` 和
 `MISTAKE_BOOK_SEGMENT_MODEL` 覆盖，默认模型为 `pp/gemini-3.8-flash`。页面会从
 `/api/ai/models` 加载可用视觉模型，AI Word 与 AI 拆题都支持选择模型。
+AI 拆题视觉请求默认等待 30 秒，低带宽或上游繁忙时可通过
+`MISTAKE_BOOK_SEGMENT_TIMEOUT` 调整；图片会在服务端压缩到适合视觉识别的尺寸后再发送。
 
 1. 安装 Tampermonkey，新建脚本并粘贴 `tampermonkey/139-token-export.user.js`。
 2. 登录 <https://yun.139.com/archive-book-h5/>。
