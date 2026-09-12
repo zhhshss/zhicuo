@@ -110,6 +110,9 @@ data/
 - AI 拍题收入错题本时，题干只保存 139 搜题返回的 HTML、文字和远程图片，不再保存用户拍摄的整页图或裁剪图。
 - “OCR Word”会解析题干中的 139 图片和文字，按当前纸张、边距、字号、行距、留白、答案与解析选项排版为一张连续 PNG，再调用 `MISTAKE_BOOK_CAMSCANNER_SCRIPT` 指定的脚本生成可编辑 Word。
 - “导出 Word”中的 LaTeX 公式会转换为 Word 原生 OMML 公式对象，不再以公式截图插入；常见的分数、上下标、根号、矩阵、求和与积分均可继续在 Word 中编辑。
+- “AI Word”保留题干段落及选项分行，仅对非空白图片请求视觉模型；相同图片只识别一次，但保留正文中的每次出现位置。代理图片地址与原地址统一处理，避免附图重复追加。
+- AI Word 的日志分别记录上游 HTTP 状态与本地结果解析错误；HTTP 200 后的解析失败不再误报为上游 502。源图片为空白、读取失败或识别未完成时，文档和下载提示会明确标注，原错题与原图不会被修改。
+- 服务器使用 LibreOffice 预览原生公式时，需要同时安装 `libreoffice-writer` 和 `libreoffice-math`；只安装 Writer 的预览可能缺少公式。
 - CamScanner 需要该脚本中的有效 `S2`、`_cssu` 凭证，并依赖 `d82.intsig.net` 网络连通。OCR 服务失败时会明确提示，并自动下载 `python-docx` 生成的原生 Word 兜底。
 - PDF 使用 `reportlab` 生成，优先调用系统中文字体。Linux 建议安装 Droid Sans Fallback、文泉驿或将 `NotoSansSC-Regular.ttf` 放到 `assets/`。
 - 本地 `image_urls`（用户手工上传或旧数据中的拍摄图）不会进入 OCR Word 题干。浏览器“打印预览”提供快速外观检查，最终文件以服务端生成结果为准。

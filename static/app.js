@@ -1170,8 +1170,8 @@ function triggerExportDownload(job) {
   link.remove();
   job.downloaded = true;
   saveExportJobs();
-  const fallbackMessage = job.fallback === 'ai-fallback-image'
-    ? 'AI 暂时不可用，已保留原图生成 Word'
+  const fallbackMessage = ['ai-fallback-image', 'ai-partial-recognition'].includes(job.fallback)
+    ? job.message || '部分图片识别未完成，文档已标注，请核对'
     : job.fallback
       ? 'CamScanner 暂不可用，已生成保留公式与配图的版式 Word'
       : `${exportTypeName(job.type)} 已生成`;

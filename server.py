@@ -798,7 +798,10 @@ def parse_ai_document_blocks(text: str, width: int, height: int) -> list[dict]:
     start, end = fenced.find("{"), fenced.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("模型未返回 JSON")
-    raw_json = fenced[start:end + 1]
+    raw_json = re.sub(
+        r'(?<!\\)\\(?=(?:begin|end|frac|dfrac|tfrac|sqrt|left|right|text|mathrm|mathbf|theta|times|beta|rho|nu|vec)\b)',
+        r'\\\\', fenced[start:end + 1],
+    )
     try:
         payload = json.loads(raw_json)
     except json.JSONDecodeError:
@@ -814,6 +817,8 @@ def parse_ai_document_blocks(text: str, width: int, height: int) -> list[dict]:
             payload = json.loads(repaired)
         except json.JSONDecodeError as exc:
             raise ValueError(f"模型 JSON 无法解析：{exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("模型结果不是 JSON 对象")
     raw_blocks = payload.get("blocks")
     if not isinstance(raw_blocks, list):
         raise ValueError("模型结果缺少 blocks")
@@ -842,8 +847,10 @@ def parse_ai_document_blocks(text: str, width: int, height: int) -> list[dict]:
             value = raw.get("text") or raw.get("latex") or raw.get("formula") or raw.get("content") or ""
             if not isinstance(value, str) or not value.strip():
                 continue
-            value = value.strip()
-            if is_formula and not re.search(r"(?:\\\(|\\\[|\$)", value):
+            value = normalize_formula_text(value).strip()
+            has_latex = bool(re.search(r"\\[A-Za-z]+", value))
+            formula_only = has_latex and not re.search(r"[\u4e00-\u9fff]", value)
+            if (is_formula or raw.get("latex") or raw.get("formula") or formula_only) and not re.search(r"(?:\\\(|\\\[|\$)", value):
                 value = r"\(" + value + r"\)"
             blocks.append({"type": "text", "bbox": pixel_bbox, "text": value})
         else:
@@ -862,6 +869,8 @@ async def _analyze_ai_word_page_once(data: bytes, model: str = CLIPROXY_MODEL) -
         with Image.open(io.BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source).convert("RGB")
             width, height = image.size
+            if ImageOps.grayscale(image).getextrema() == (255, 255):
+                raise HTTPException(422, "源图片为空白，没有可识别内容；未调用 AI")
     except (UnidentifiedImageError, OSError) as exc:
         raise HTTPException(400, "无法识别图片格式") from exc
     prompt = f"""你是中文文档 OCR 和版面分析器。图片尺寸为 {width}×{height} 像素。
@@ -869,6 +878,7 @@ async def _analyze_ai_word_page_once(data: bytes, model: str = CLIPROXY_MODEL) -
 文字块 type 必须是 text，text 必须逐字保留；数学公式必须识别成 LaTeX 文字（行内 \\( \\)，独立公式 \\[ \\]），绝对不要把公式截图或公式区域标记为 type=image。若单独返回公式，可使用 type=formula 并把 LaTeX 放进 latex 字段。
 只有无法转成文字的非文字内容（几何图、函数图、表格截图、照片、手写图、插图）才用 type=image，并给出只包住图本身的 bbox；不要把普通文字或数学公式当图片，也不要重复识别图片里的文字。
 bbox 是 0 到 1000 的归一化坐标 [x1,y1,x2,y2]，原点在左上角。不要漏掉题号、选项、单位和标点。
+同一段题干的文字和行内公式应合并为一个 text 块；每个选项单独一块。若整张图只有公式，返回一个 type=formula 的块，用 latex 字段保留完整公式，包括区间两端的括号、分段函数换行和条件。
 JSON 字符串里的反斜杠必须写成两个反斜杠（例如 \\\\frac、\\\\sqrt、\\\\(），否则 JSON 无法解析。
 只返回 JSON，不要 Markdown 或解释：{{"blocks":[{{"type":"text","bbox":[x1,y1,x2,y2],"text":"..."}},{{"type":"image","bbox":[x1,y1,x2,y2],"caption":"可选说明"}}]}}"""
     request = {
@@ -883,10 +893,13 @@ JSON 字符串里的反斜杠必须写成两个反斜杠（例如 \\\\frac、\\\
         }],
     }
     headers = {"Authorization": f"Bearer {load_cliproxy_api_key()}", "Content-Type": "application/json"}
+    started_at = time.perf_counter()
+    print(f"[ai-word] request -> model={model}, image={len(data)}B, size={width}x{height}", flush=True)
     try:
         timeout = httpx.Timeout(CLIPROXY_AI_WORD_TIMEOUT, connect=8)
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             response = await client.post(f"{CLIPROXY_BASE_URL}/v1/responses", headers=headers, json=request)
+        print(f"[ai-word] response <- model={model}, upstream_status={response.status_code}, elapsed={time.perf_counter() - started_at:.2f}s", flush=True)
         if response.status_code != 200:
             raise HTTPException(502, f"AI OCR 返回 {response.status_code}：{response.text[:300]}")
         result = response.json()
@@ -899,8 +912,11 @@ JSON 字符串里的反斜杠必须写成两个反斜杠（例如 \\\\frac、\\\
         raise
     except httpx.TimeoutException as exc:
         raise HTTPException(504, f"AI OCR 超时（{CLIPROXY_AI_WORD_TIMEOUT:g} 秒）") from exc
-    except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
-        raise HTTPException(502, f"AI OCR 结果解析失败：{exc}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"AI OCR 网络请求失败：{type(exc).__name__}") from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(f"[ai-word] parse-error <- model={model}, upstream_status=200, detail={exc}", flush=True)
+        raise HTTPException(422, f"AI 已返回 HTTP 200，但识别结果无法使用：{exc}") from exc
 
 
 def _unknown_model_error(exc: HTTPException) -> bool:
@@ -920,7 +936,7 @@ async def _retry_ai_word_page(data: bytes, model: str, retries: int) -> dict:
                     or attempt >= retries):
                 raise
             delay = min(2.0, 0.6 * (attempt + 1))
-            print(f"[ai-word] ⚠️ CLIProxyAPI 暂时不可用（{model}，{exc.status_code}），{delay:g}s 后重试 {attempt + 1}/{retries}")
+            print(f"[ai-word] 请求失败（{model}，{exc.detail}），{delay:g}s 后重试 {attempt + 1}/{retries}", flush=True)
             await asyncio.sleep(delay)
     raise last_error or HTTPException(502, "AI OCR 暂时不可用")
 
@@ -1001,6 +1017,11 @@ async def _ai_blocks_for_image(data: bytes, caption: str = "", model: str = "") 
     try:
         with Image.open(io.BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source).convert("RGB")
+            if ImageOps.grayscale(image).getextrema() == (255, 255):
+                return [{
+                    "type": "text", "text": "〔原题图为空白〕",
+                    "warning": "源图片本身为空白，未调用 AI；原图片地址仍保留在错题中",
+                }]
             if image.width <= 800 and image.height <= 260:
                 scale = min(4.0, max(1.0, 640 / max(image.width, 1)))
                 if scale > 1:
@@ -1017,15 +1038,11 @@ async def _ai_blocks_for_image(data: bytes, caption: str = "", model: str = "") 
         result = await analyze_ai_word_page(analysis_data, model)
         return crop_ai_image_blocks(analysis_data, result["blocks"])
     except HTTPException as exc:
-        print(f"[ai-word] ⚠️ 图片 AI 识别失败，保留原图：{exc.detail}")
-        try:
-            with Image.open(io.BytesIO(data)) as source:
-                grayscale = ImageOps.grayscale(ImageOps.exif_transpose(source))
-                if grayscale.getextrema()[0] >= 250:
-                    return []
-        except (UnidentifiedImageError, OSError):
-            return []
-        return [{"type": "image", "bbox": [0, 0, 1, 1], "caption": caption or "原图", "data": data}]
+        print(f"[ai-word] 图片识别未完成，保留原图：{exc.detail}", flush=True)
+        return [{
+            "type": "image", "bbox": [0, 0, 1, 1], "caption": caption or "原图", "data": data,
+            "warning": "图片识别未完成，已保留原图，请核对",
+        }]
 
 
 async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[str, Any]) -> dict:
@@ -1054,40 +1071,41 @@ async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[st
         return text
 
     def append_text(text: str, style: str = "text") -> None:
-        normalized = normalize_formula_text(text).strip()
-        if not normalized:
+        normalized = normalize_formula_text(text)
+        if style != "text":
+            normalized = normalized.strip()
+        if not normalized.strip():
             return
-        if blocks and blocks[-1].get("type") == "text" and blocks[-1].get("style") == style:
-            blocks[-1]["text"] += "\n" + normalized
+        if style == "text" and blocks and blocks[-1].get("type") == "text" and blocks[-1].get("style") == style:
+            blocks[-1]["text"] += normalized
         else:
             blocks.append({"type": "text", "style": style, "text": normalized})
 
     def append_rich(value: Any, section_title: str = "") -> None:
+        if not value:
+            return
         if section_title:
             append_text(section_title, "heading")
         pending: list[str] = []
-        for kind, value in rich_events(prepare_direct_html(value)):
+        for kind, value in rich_events(prepare_direct_html(value), separate_cells=True):
             if kind == "text":
-                pending.append(value)
+                pending.append(re.sub(r"[ \t\r\n]+", " ", value))
             elif kind == "break":
-                text = "".join(pending).strip()
-                if text:
-                    append_text(text)
+                append_text("".join(pending))
                 pending.clear()
+                if blocks and blocks[-1].get("type") != "break" and blocks[-1].get("style", "text") == "text":
+                    blocks.append({"type": "break"})
             elif kind == "image":
-                text = "".join(pending).strip()
-                if text:
-                    append_text(text)
+                append_text("".join(pending))
                 pending.clear()
                 source = str(value or "").strip()
+                source = remote_question_image_url(source) or source
                 if source:
                     embedded_sources.add(source)
                     placeholder = {"type": "image-pending", "source": source}
                     image_tasks.append((placeholder, source, "题目配图", blocks))
                     blocks.append(placeholder)
-        text = "".join(pending).strip()
-        if text:
-            append_text(text)
+        append_text("".join(pending))
 
     append_text(f"第 {index} 题", "title")
     if options.get("include_meta", True):
@@ -1101,6 +1119,7 @@ async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[st
     append_rich(item.get("question"), "题目")
     for source in item.get("image_urls") or []:
         source = str(source or "").strip()
+        source = remote_question_image_url(source) or source
         if source and source not in embedded_sources:
             placeholder = {"type": "image-pending", "source": source}
             image_tasks.append((placeholder, source, "题目图片", blocks))
@@ -1128,8 +1147,8 @@ async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[st
                 image_cache[source] = await _ai_blocks_for_image(data, caption, str(options.get("ai_model") or ""))
             ai_blocks = [dict(block) for block in image_cache[source]]
         except HTTPException as exc:
-            print(f"[ai-word] ⚠️ 图片读取失败，跳过图片：{exc.detail}")
-            ai_blocks = []
+            print(f"[ai-word] 图片读取失败：{exc.detail}", flush=True)
+            ai_blocks = [{"type": "text", "text": "〔原题图读取失败〕", "warning": "部分原题图片读取失败，请核对"}]
         try:
             block_index = target_blocks.index(placeholder)
         except ValueError:
@@ -1138,6 +1157,9 @@ async def _build_ai_item_page(item: dict[str, Any], index: int, options: dict[st
     return {
         "title": str(item.get("title") or f"第 {index} 题"),
         "blocks": blocks, "answer_blocks": answer_blocks, "mixed": True,
+        "warnings": list(dict.fromkeys(
+            block["warning"] for block in [*blocks, *answer_blocks] if block.get("warning")
+        )),
     }
 
 
@@ -1646,6 +1668,8 @@ async def _generate_export(
             for index, item in enumerate(ai_items, 1):
                 report(8 + round((index - 1) / total * 68), f"正在整理第 {index} / {total} 道错题（文字直排，图片 AI 识别）")
                 pages.append(await _build_ai_item_page(item, index, req.options))
+                if pages[-1].get("warnings"):
+                    fallback = "ai-partial-recognition"
                 report(8 + round(index / total * 68), f"已完成第 {index} / {total} 道错题的文字与图片排版")
         else:
             total = len(input_paths)
@@ -1662,11 +1686,12 @@ async def _generate_export(
                     fallback = "ai-fallback-image"
                     detail = _safe_job_error(exc) if isinstance(exc, Exception) else "未知错误"
                     print(f"[ai-word] ⚠️ 第 {index} 张图片 AI 识别失败，保留原图：{detail}")
-                    report(8 + round(index / total * 68), f"第 {index} 张图片 AI 暂不可用，已保留原图")
+                    report(8 + round(index / total * 68), f"第 {index} 张图片识别未完成，已保留原图")
                     page = {
+                        "warnings": ["本页识别未完成，已保留原图，请核对"],
                         "blocks": [{
                             "type": "image", "bbox": [0, 0, 1, 1],
-                            "caption": "原图（AI 暂不可用）", "data": data,
+                            "caption": "原图（识别未完成）", "data": data,
                         }],
                     }
                 pages.append(page)
@@ -1736,7 +1761,9 @@ async def _run_export_job(
             await asyncio.to_thread(output_path.write_bytes, content)
             complete_message = "导出完成"
             if fallback == "ai-fallback-image":
-                complete_message = "导出完成（AI 暂不可用，已保留原图）"
+                complete_message = "导出完成（部分图片识别未完成，已保留原图，请核对）"
+            elif fallback == "ai-partial-recognition":
+                complete_message = "导出完成（存在空白源图或未完成识别的图片，文档已标注，请核对）"
             elif fallback:
                 complete_message = "导出完成（已使用保真回退）"
             _update_export_job(

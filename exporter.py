@@ -16,7 +16,7 @@ from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt
+from docx.shared import Cm, Pt, RGBColor
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A3, A4, A5, B5, LETTER, landscape
@@ -81,7 +81,10 @@ def normalize_formula_text(value: Any) -> str:
     text = str(value or "")
     # 模型有时把 JSON 中的 LaTeX 再多转义一层，只折叠公式命令和定界符，
     # 不动 aligned 环境里的换行双反斜杠。
-    text = re.sub(r"\\{2,}(?=(?:[A-Za-z]{2,}|[()[\]{}]))", r"\\", text)
+    text = re.sub(
+        r"(?<!\\)\\begin\{([^{}]+)\}.*?\\end\{\1\}|\\{2,}(?=(?:[A-Za-z]{2,}|[()[\]{}]))",
+        lambda match: match.group(0) if match.group(1) else "\\", text, flags=re.S,
+    )
     text = text.replace("\x08", "\\b").replace("\x0c", "\\f").replace("\x0b", "\\v")
     text = re.sub(r"(?<!\\)\$\$([^$]+)\$\$", r"\\[\1\\]", text, flags=re.S)
     # 单美元包裹的数学表达式统一为 KaTeX/MathJax 通用的行内分隔符；
@@ -89,7 +92,7 @@ def normalize_formula_text(value: Any) -> str:
     text = re.sub(
         r"(?<!\\)\$([^$\n]+?)\$",
         lambda match: (r"\(" + match.group(1) + r"\)")
-        if re.search(r"(?:\\[A-Za-z]+|[\\^_=<>]|\d\s*[+\-*/]\s*\d)", match.group(1)) else match.group(0),
+        if re.search(r"(?:\\[A-Za-z]+|[\\^_=<>]|\d\s*[+\-*/]\s*\d|^[A-Za-z0-9]+$|^[([][\d.,\s]+[)\]]$)", match.group(1)) else match.group(0),
         text,
     )
     return text
@@ -100,7 +103,7 @@ _FORMULA_RE = re.compile(
     re.S,
 )
 _BARE_FORMULA_RE = re.compile(
-    r"(?<![\w\\])(?:[A-Za-z](?:[_^](?:\{[^{}\n]+\}|[A-Za-z0-9]))+)(?![\w])"
+    r"(?<![A-Za-z0-9_\\])(?:[A-Za-z](?:[_^](?:\{[^{}\n]+\}|[A-Za-z0-9]))+)(?![A-Za-z0-9_])"
 )
 
 
@@ -258,6 +261,8 @@ def _omml_matrix(source: str, environment: str):
         delimiters = {"pmatrix": ("(", ")"), "bmatrix": ("[", "]"), "Bmatrix": ("{", "}"), "vmatrix": ("|", "|"), "Vmatrix": ("‖", "‖")}
         begin, end = delimiters[environment]
         return _omml_delimiter([matrix], begin, end)
+    if environment == "cases":
+        return _omml_delimiter([matrix], "{", ".")
     return matrix
 
 
@@ -353,7 +358,7 @@ class _LatexOMMLParser:
         char = self.text[self.index]
         if char == "{":
             self.index += 1
-            return _omml_container("e", self.parse("}"))
+            return _omml_container("box", [_omml_container("e", self.parse("}"))])
         if char == "\\":
             return self._command()
         self.index += 1
@@ -428,7 +433,7 @@ def _omml_formula(formula: str, display: bool = False):
             omml = None
     if omml is None:
         formula_root = _omml_element("oMath")
-        formula_root.append(_omml_container("e", _LatexOMMLParser(normalized).parse()))
+        formula_root.extend(_LatexOMMLParser(normalized).parse())
         omml = formula_root
     if display:
         paragraph = _omml_element("oMathPara")
@@ -438,22 +443,19 @@ def _omml_formula(formula: str, display: bool = False):
 
 
 def _append_formula_runs(paragraph, text: str) -> None:
-    for line_index, line in enumerate(normalize_formula_text(text).splitlines() or [""]):
-        if line_index:
-            paragraph.add_run().add_break()
-        parts = _formula_parts(line)
-        has_display = any(kind == "formula" and display for kind, _value, display in parts)
-        if has_display:
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        for kind, value, display in parts:
-            if kind == "text":
-                if value:
-                    paragraph.add_run(value)
-                continue
-            try:
-                paragraph._p.append(_omml_formula(value, display))
-            except Exception:
+    parts = _formula_parts(normalize_formula_text(text))
+    display_only = len(parts) == 1 and parts[0][0] == "formula" and parts[0][2]
+    if display_only:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for kind, value, display in parts:
+        if kind == "text":
+            if value:
                 paragraph.add_run(value)
+            continue
+        try:
+            paragraph._p.append(_omml_formula(value, display and display_only))
+        except Exception:
+            paragraph.add_run(value)
 
 
 def _append_formula_paragraph(document: Document, text: str, usable_width: float, font_size: float) -> None:
@@ -493,10 +495,11 @@ class _RichContentParser(HTMLParser):
 
     block_tags = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "section"}
 
-    def __init__(self):
+    def __init__(self, separate_cells: bool = False):
         super().__init__()
         self.events: list[tuple[str, str]] = []
         self.skip_depth = 0
+        self.separate_cells = separate_cells
 
     def handle_starttag(self, tag: str, attrs):
         tag = tag.lower()
@@ -511,7 +514,7 @@ class _RichContentParser(HTMLParser):
                 self.events.append(("image", html.unescape(src)))
         elif tag == "li":
             self.events.append(("text", "• "))
-        if tag in self.block_tags:
+        if tag in self.block_tags or (self.separate_cells and tag in {"td", "th"}):
             self.events.append(("break", ""))
 
     def handle_endtag(self, tag: str):
@@ -527,10 +530,10 @@ class _RichContentParser(HTMLParser):
             self.events.append(("text", html.unescape(data)))
 
 
-def rich_events(value: Any) -> list[tuple[str, str]]:
+def rich_events(value: Any, separate_cells: bool = False) -> list[tuple[str, str]]:
     if not value:
         return []
-    parser = _RichContentParser()
+    parser = _RichContentParser(separate_cells=separate_cells)
     try:
         parser.feed(str(value))
         parser.close()
@@ -899,9 +902,8 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     subtitle = document.add_paragraph(opt["subtitle"], style="Subtitle")
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    summary = document.add_paragraph(f"混合排版 {len(pages)} 个内容单元 · 直接文字保留 · 图片按内容裁切")
+    summary = document.add_paragraph(f"共 {len(pages)} 个内容单元 · 可编辑文字与原生公式", style="Subtitle")
     summary.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    document.add_paragraph()
 
     usable_width = max(60.0, width - opt["margin_left"] - opt["margin_right"])
     usable_height = max(80.0, height - opt["margin_top"] - opt["margin_bottom"])
@@ -925,8 +927,22 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             nonlocal flow_paragraph
             if flow_paragraph is None:
                 flow_paragraph = document.add_paragraph()
-                configure_paragraph(flow_paragraph, after=7, keep=True)
+                configure_paragraph(flow_paragraph, after=7)
             return flow_paragraph
+
+        def append_flow_text(text: str) -> None:
+            for kind, value, display in _formula_parts(text):
+                if kind == "formula" and display:
+                    flush_flow()
+                    _append_formula_runs(ensure_flow(), r"\[" + value + r"\]")
+                    flush_flow()
+                elif kind == "formula":
+                    _append_formula_runs(ensure_flow(), r"\(" + value + r"\)")
+                else:
+                    if flow_paragraph is None:
+                        value = value.lstrip()
+                    if value:
+                        _append_formula_runs(ensure_flow(), value)
 
         def image_size(data: bytes):
             with Image.open(io.BytesIO(data)) as source:
@@ -964,6 +980,9 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
 
         for block in blocks:
             kind = str(block.get("type") or "text").lower()
+            if kind == "break":
+                flush_flow()
+                continue
             if kind == "image" and block.get("data"):
                 try:
                     if inline_text:
@@ -988,20 +1007,23 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             if kind in {"image-pending", "image"}:
                 continue
             text = normalize_formula_text(block.get("text"))
-            text = text.strip()
-            if not text:
+            if not text.strip():
                 continue
             style = str(block.get("style") or "text")
-            if style == "text" and inline_text:
-                _append_formula_runs(ensure_flow(), text)
+            if style == "text":
+                if not inline_text:
+                    flush_flow()
+                append_flow_text(text)
                 continue
             flush_flow()
             if style == "title":
                 paragraph = document.add_heading(text, level=1)
                 configure_paragraph(paragraph, before=4, after=6, keep=True)
+                paragraph.paragraph_format.keep_with_next = True
             elif style == "heading":
                 paragraph = document.add_heading(text, level=2)
                 configure_paragraph(paragraph, before=9, after=3, keep=True)
+                paragraph.paragraph_format.keep_with_next = True
             elif style == "meta":
                 paragraph = document.add_paragraph(text, style="Subtitle")
                 configure_paragraph(paragraph, after=8, keep=True)
@@ -1011,7 +1033,7 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
         flush_flow()
 
     for page_index, page in enumerate(pages, 1):
-        if page_index > 1:
+        if page_index > 1 and (not page.get("mixed") or opt["page_break_each"]):
             document.add_page_break()
         if not page.get("mixed"):
             heading = document.add_heading(f"第 {page_index} 页", level=1)
@@ -1020,6 +1042,12 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
         render_blocks(blocks, inline_text=bool(page.get("mixed")))
         if not blocks:
             document.add_paragraph("（AI 未识别到可用内容）")
+        for warning in page.get("warnings") or []:
+            paragraph = document.add_paragraph()
+            configure_paragraph(paragraph, after=5)
+            run = paragraph.add_run(f"需核对：{warning}")
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor.from_string("9A3412")
 
     if opt["answer_mode"] == "separate":
         answer_pages = [page.get("answer_blocks") or [] for page in pages]
@@ -1028,7 +1056,7 @@ def build_ai_docx(pages: list[dict[str, Any]], raw_options: dict[str, Any] | Non
             heading = document.add_heading("参考答案与解析", 0)
             heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for page_index, blocks in enumerate(answer_pages, 1):
-                if page_index > 1:
+                if page_index > 1 and opt["page_break_each"]:
                     document.add_page_break()
                 document.add_heading(f"第 {page_index} 题", level=1)
                 render_blocks(blocks, inline_text=True)
