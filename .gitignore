@@ -1,0 +1,19 @@
+config.json
+data/
+.credential.key
+credentials.enc
+.venv/
+__pycache__/
+*.pyc
+
+# 本地运行产物与敏感备份
+exports/
+*.db
+*.db-shm
+*.db-wal
+*.docx
+*.pdf
+*.zip
+.env
+.env.*
+*.log

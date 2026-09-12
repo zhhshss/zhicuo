@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123d3b">
+  <title>知错 · AI 错题本</title>
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260901-background-export">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand"><div class="brand-mark">✓</div><div><div class="brand-name">知错</div><div class="brand-sub">AI 错题本</div></div></div>
+    <div class="nav-label">学习工作台</div>
+    <nav class="nav-list">
+      <button class="nav-item active" data-view="dashboard"><span class="nav-icon">⌂</span>学习概览</button>
+      <button class="nav-item" data-view="library"><span class="nav-icon">▤</span>错题库<span class="nav-badge" id="navTotal">0</span></button>
+      <button class="nav-item" data-view="capture"><span class="nav-icon">◎</span>拍题整理</button>
+      <button class="nav-item" data-view="review"><span class="nav-icon">↻</span>今日复习<span class="nav-badge" id="navDue">0</span></button>
+      <button class="nav-item" data-view="export"><span class="nav-icon">⇩</span>排版导出</button>
+    </nav>
+    <div class="nav-label" style="margin-top:26px">系统</div>
+    <nav class="nav-list">
+      <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>AI 与数据</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="storage-card">
+        <div class="storage-line"><span>本地错题库</span><b id="storageCount">0 题</b></div>
+        <div class="progress"><span id="storageProgress" style="width:2%"></span></div>
+        <div style="font-size:9px;color:#789f9b;margin-top:8px">数据只保存在当前电脑</div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="btn btn-icon mobile-menu" id="mobileMenu" aria-label="菜单">☰</button>
+      <div class="global-search"><span class="search-icon">⌕</span><input id="globalSearch" placeholder="搜索题目、知识点或标签…"><span class="keycap">⌘ K</span></div>
+      <div class="top-actions">
+        <div class="status-pill" id="aiStatus"><span class="status-dot"></span><span>AI 未配置</span></div>
+        <button class="btn btn-primary" data-action="new">＋ 录入错题</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <section class="view active" id="view-dashboard">
+        <div class="page-head"><div><div class="eyebrow">LEARNING OVERVIEW</div><h1 class="page-title">今天，也要把错误变成进步。</h1><p class="page-desc" id="greetingLine">每一道认真复盘的错题，都在缩短与答案的距离。</p></div><div class="head-actions"><button class="btn btn-secondary" data-view-jump="review">↻ 开始复习</button><button class="btn btn-primary" data-view-jump="capture">◎ 拍题整理</button></div></div>
+        <div class="grid dashboard-grid">
+          <article class="card stat-card"><span class="stat-icon">▤</span><div class="stat-label">累计错题</div><div class="stat-value" id="statTotal">0</div><div class="stat-foot">沉淀是进步的第一步</div></article>
+          <article class="card stat-card coral"><span class="stat-icon">↻</span><div class="stat-label">今日待复习</div><div class="stat-value" id="statDue">0</div><div class="stat-foot">按记忆节奏准时回顾</div></article>
+          <article class="card stat-card yellow"><span class="stat-icon">★</span><div class="stat-label">重点收藏</div><div class="stat-value" id="statStarred">0</div><div class="stat-foot">聚焦高价值难题</div></article>
+          <article class="card stat-card"><span class="stat-icon">↗</span><div class="stat-label">平均掌握度</div><div class="stat-value"><span id="statMastery">0</span><small style="font-size:15px">%</small></div><div class="stat-foot">复习反馈实时更新</div></article>
+          <article class="card chart-card"><div class="card-head"><div><h2 class="card-title">本周错题趋势</h2><div class="card-note">近 7 天录入数量</div></div></div><div class="bar-chart" id="trendChart"></div></article>
+          <article class="card subject-card"><div class="card-head"><div><h2 class="card-title">学科分布</h2><div class="card-note">定位最需要加强的学科</div></div><button class="btn btn-ghost btn-sm" data-view-jump="library">全部 →</button></div><div class="subject-list" id="subjectChart"></div></article>
+          <article class="card recent-card"><div class="card-head"><div><h2 class="card-title">最近整理</h2><div class="card-note">刚刚沉淀进错题库的内容</div></div><button class="btn btn-ghost btn-sm" data-view-jump="library">查看错题库 →</button></div><div class="recent-list" id="recentList"></div></article>
+          <article class="card quick-card"><h2 class="card-title">快速开始</h2><div class="card-note">选择一种最顺手的整理方式</div><div class="quick-actions"><button class="quick-action" data-view-jump="capture">◎<b>AI 拍题</b><span>自动识别题目与解析</span></button><button class="quick-action" data-action="new">＋<b>手工录入</b><span>完整记录错因与笔记</span></button><button class="quick-action" data-view-jump="review">↻<b>今日复习</b><span>智能安排复习节奏</span></button><button class="quick-action" data-view-jump="export">⇩<b>打印练习</b><span>Word / PDF 自由排版</span></button></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-library">
+        <div class="page-head"><div><div class="eyebrow">MISTAKE LIBRARY</div><h1 class="page-title">错题库</h1><p class="page-desc">筛选、归类、收藏和批量整理你的全部错题。</p></div><div class="head-actions"><button class="btn btn-secondary" data-action="export-selected">⇩ 导出所选</button><button class="btn btn-primary" data-action="new">＋ 新建错题</button></div></div>
+        <div class="card card-flat toolbar">
+          <div class="field grow"><input class="input" id="libQuery" placeholder="⌕  搜索题干、答案、知识点…"></div>
+          <div class="field"><select class="select" id="filterSubject"><option value="">全部学科</option></select></div>
+          <div class="field"><select class="select" id="filterNotebook"><option value="">全部错题本</option></select></div>
+          <div class="field"><select class="select" id="filterError"><option value="">全部错因</option></select></div>
+          <div class="field"><select class="select" id="filterSort"><option value="updated_desc">最近更新</option><option value="created_desc">最近录入</option><option value="difficulty_desc">难度优先</option><option value="mastery_asc">薄弱优先</option><option value="review_asc">复习时间</option></select></div>
+          <div class="filter-tabs"><button class="filter-tab active" data-status="active">学习中</button><button class="filter-tab" data-status="all">全部</button><button class="filter-tab" data-status="archived">已归档</button></div>
+        </div>
+        <div class="bulk-bar" id="bulkBar"><b>已选 <span id="selectedCount">0</span> 题</b><span class="spacer"></span><button class="btn btn-sm" data-batch="star">★ 收藏</button><button class="btn btn-sm" data-batch="archive">□ 归档</button><button class="btn btn-sm" data-action="export-selected">⇩ 导出</button><button class="btn btn-sm" data-batch="delete">删除</button></div>
+        <div class="library-grid" id="libraryGrid"></div>
+        <div class="pagination" id="pagination"></div>
+      </section>
+
+      <section class="view" id="view-capture">
+        <div class="page-head"><div><div class="eyebrow">AI CAPTURE</div><h1 class="page-title">拍题整理</h1><p class="page-desc">上传试卷或作业照片，AI 识别后可收入错题库，也能直接裁切图片生成 Word。</p></div><div class="head-actions"><button class="btn btn-secondary" data-action="new">不用 AI，手工录入</button></div></div>
+        <div class="capture-layout">
+          <div>
+            <article class="card">
+              <div class="drop-zone" id="captureDrop"><div><div class="drop-icon">◎</div><b style="font-size:16px;color:var(--ink)">点击或拖入题目图片</b><p style="margin:5px 0 0">支持 JPG、PNG、WebP，原图最大 50MB；上传前自动纠正方向并压缩</p></div></div>
+              <input type="file" id="captureFiles" accept="image/*" multiple hidden>
+              <div class="previews" id="capturePreviews"></div>
+              <div class="mode-grid"><button class="mode-option active" data-capture-mode="search"><b>搜题识别</b><span>自动拆分整页题目、答案、知识点</span></button><button class="mode-option" data-capture-mode="solve"><b>AI 解原题</b><span>适合搜不到的题，流式生成详细解答</span></button></div>
+              <label class="check-row"><input type="checkbox" id="smartSegments" checked>整页试卷智能切题 <span class="card-note">（AI 先拆题，核对题框后再逐题搜）</span></label>
+              <div class="field" id="segmentDetectorField"><label>拆题方式</label><select class="select" id="segmentDetector"><option value="ai">AI 自动拆题</option><option value="ocr">本地 OCR 拆题</option></select></div>
+              <div class="field"><label>AI 模型</label><select class="select ai-model-select" id="captureAiModel"><option value="pp/gemini-3.8-flash">Gemini 3.8 Flash（推荐）</option></select><div class="card-note" style="margin-top:5px">从本机 CLIProxyAPI 的可用模型中选择</div></div>
+              <div id="solveOptions" class="hidden"><div class="form-grid"><div class="field"><label>图片关系</label><select class="select" id="solveMode"><option value="single">单题 / 独立页面</option><option value="across">跨页（至少 2 图）</option></select></div><label class="check-row" style="align-self:end"><input type="checkbox" id="deepThink">启用深度思考</label></div></div>
+              <button class="btn btn-primary" style="width:100%;margin-top:15px" id="captureRun">✦ 开始 AI 整理</button>
+              <button class="btn btn-secondary" style="width:100%;margin-top:9px" id="aiWordRun">▣ AI 识别文字与图片，生成 Word</button>
+              <div id="captureProgress" class="hidden" style="margin-top:14px"><div class="loading-line"></div><div class="card-note" id="captureStatus" style="margin-top:7px">正在准备…</div></div>
+              <div id="captureAiWordStatus" class="notice hidden" style="margin-top:12px"></div>
+            </article>
+            <div class="capture-results" id="captureResults"></div>
+          </div>
+          <aside class="card card-flat">
+            <div class="card-head"><h2 class="card-title">整理建议</h2><span style="font-size:20px">✦</span></div>
+            <div class="notice" id="captureConfigNotice">需要先在“AI 与数据”中导入 139 云盘配置，才能调用拍题接口。</div>
+            <hr class="divider">
+            <div style="display:grid;gap:16px">
+              <div><b>① 拍清题干</b><div class="card-note">保持光线均匀，尽量避开手写遮挡和反光。</div></div>
+              <div><b>② 核对识别</b><div class="card-note">AI 结果可能有误，收入错题本前可以直接编辑。</div></div>
+              <div><b>③ 记录错因</b><div class="card-note">选择错因并写下自己的复盘，比只抄答案更有效。</div></div>
+              <div><b>④ 及时复习</b><div class="card-note">新题默认进入今日复习，评分后自动安排下一次。</div></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-review">
+        <div class="page-head"><div><div class="eyebrow">SPACED REVIEW</div><h1 class="page-title">今日复习</h1><p class="page-desc">先独立回忆，再查看答案，根据真实掌握程度反馈。</p></div><div class="head-actions"><button class="btn btn-secondary" id="shuffleReview">⇄ 打乱顺序</button></div></div>
+        <div class="review-layout" id="reviewArea"></div>
+      </section>
+
+      <section class="view" id="view-export">
+        <div class="page-head"><div><div class="eyebrow">LAYOUT & EXPORT</div><h1 class="page-title">排版导出</h1><p class="page-desc">可用 CamScanner OCR，也可用 AI 识别原图中的文字与图片并裁切后生成 Word。</p></div><div class="head-actions"><button class="btn btn-secondary" id="exportAiWord">✦ AI 识别 Word</button><button class="btn btn-secondary" id="downloadDocx">W OCR Word</button><button class="btn btn-primary" id="downloadPdf">▣ 导出 PDF</button></div></div>
+        <div class="export-job-status hidden" id="exportJobStatus"></div>
+        <div class="export-layout">
+          <article class="card export-settings">
+            <div class="settings-section"><div class="settings-title">导出范围</div><div class="field"><select class="select" id="exportScope"><option value="filtered">当前筛选结果</option><option value="selected">错题库中已选题目</option><option value="all">全部学习中错题</option><option value="due">今日待复习</option><option value="starred">重点收藏</option></select></div><div class="card-note" id="exportCount" style="margin-top:7px">准备导出 0 题</div></div>
+            <div class="settings-section"><div class="settings-title">文档信息</div><div class="field"><label>标题</label><input class="input export-control" id="exportTitle" value="我的错题集"></div><div class="field" style="margin-top:9px"><label>副标题</label><input class="input export-control" id="exportSubtitle" value="系统整理 · 针对复习"></div><div class="field" style="margin-top:9px"><label>AI 模型</label><select class="select ai-model-select" id="exportAiModel"><option value="pp/gemini-3.8-flash">Gemini 3.8 Flash（推荐）</option></select></div></div>
+            <div class="settings-section"><div class="settings-title">纸张与页面</div><div class="form-grid"><div class="field"><label>纸张大小</label><select class="select export-control" id="paperSize"><option>A4</option><option>A3</option><option>A5</option><option>B5</option><option>Letter</option></select></div><div class="field"><label>方向</label><select class="select export-control" id="orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></div><div class="field"><label>上/下边距 (mm)</label><input class="input export-control" id="marginVertical" type="number" min="5" max="50" value="18"></div><div class="field"><label>左/右边距 (mm)</label><input class="input export-control" id="marginHorizontal" type="number" min="5" max="50" value="18"></div></div></div>
+            <div class="settings-section"><div class="settings-title">正文排版</div><div class="form-grid"><div class="field"><label>字号 (pt)</label><input class="input export-control" id="fontSize" type="number" min="8" max="24" value="11"></div><div class="field"><label>行距</label><select class="select export-control" id="lineSpacing"><option value="1">单倍</option><option value="1.25">1.25 倍</option><option value="1.5" selected>1.5 倍</option><option value="1.75">1.75 倍</option><option value="2">双倍</option><option value="2.5">2.5 倍</option><option value="3">三倍</option></select></div><div class="field"><label>答题留白行数</label><input class="input export-control" id="blankLines" type="number" min="0" max="12" value="3"></div><div class="field"><label>答案位置</label><select class="select export-control" id="answerMode"><option value="separate">文末答案册</option><option value="inline">紧随题目</option><option value="none">不导出答案</option></select></div></div></div>
+            <div class="settings-section"><div class="settings-title">包含内容</div><label class="check-row"><input class="export-control" type="checkbox" id="includeAnalysis" checked>题目解析</label><label class="check-row"><input class="export-control" type="checkbox" id="includeMyAnswer" checked>原错误作答</label><label class="check-row"><input class="export-control" type="checkbox" id="includeNote" checked>复盘笔记</label><label class="check-row"><input class="export-control" type="checkbox" id="includeMeta" checked>学科、难度与标签</label><label class="check-row"><input class="export-control" type="checkbox" id="pageBreakEach">每题另起一页</label><label class="check-row"><input class="export-control" type="checkbox" id="pageNumbers" checked>页码</label></div>
+          </article>
+          <article class="card preview-card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:15px 19px;margin:0"><div><h2 class="card-title">实时预览</h2><div class="card-note">示意预览，最终文档会自动分页</div></div><button class="btn btn-sm btn-secondary" onclick="window.print()">打印预览</button></div><div class="paper-wrap"><div class="paper-preview" id="paperPreview"></div></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="page-head"><div><div class="eyebrow">AI & DATA</div><h1 class="page-title">AI 与数据</h1><p class="page-desc">配置 139 云盘拍题能力，并管理本机错题数据。</p></div></div>
+        <div class="settings-grid">
+          <article class="card"><div class="card-head"><div><h2 class="card-title">139 云盘连接</h2><div class="card-note">Token 使用 AES-256-GCM 加密后保存在本机</div></div></div><div class="field"><label>Authorization Token</label><input class="input secret" type="password" id="token" placeholder="Basic ..."></div><div class="field" style="margin-top:11px"><label>userDomainId</label><input class="input secret" id="uid" placeholder="用户标识"></div><button class="btn btn-primary" id="saveConfig" style="margin-top:15px">加密保存连接配置</button><div class="notice" id="configStatus" style="margin-top:14px">正在检测…</div></article>
+          <article class="card"><div class="card-head"><div><h2 class="card-title">CamScanner OCR</h2><div class="card-note">填写浏览器当前会话 Cookie，凭证只保存在本机加密配置中</div></div></div><div class="field"><label>S2</label><input class="input secret" type="password" id="camScannerS2" autocomplete="off" placeholder="CamScanner Cookie 中的 S2"></div><div class="field" style="margin-top:11px"><label>_cssu</label><input class="input secret" type="password" id="camScannerCssu" autocomplete="off" placeholder="CamScanner Cookie 中的 _cssu"></div><div class="field" style="margin-top:11px"><label>_csste</label><input class="input secret" type="password" id="camScannerCsste" autocomplete="off" placeholder="CamScanner Cookie 中的 _csste"></div><button class="btn btn-primary" id="saveCamScanner" style="margin-top:15px">保存 CamScanner 凭证</button><div class="notice" id="camScannerStatus" style="margin-top:14px">正在检测…</div></article>
+          <article class="card"><div class="card-head"><div><h2 class="card-title">快速导入配置</h2><div class="card-note">支持油猴脚本导出的 config.json</div></div></div><div class="field"><label>选择配置文件</label><input class="input" type="file" id="configFile" accept=".json,application/json"></div><div class="field" style="margin-top:11px"><label>或粘贴 JSON</label><textarea class="textarea secret" id="configPaste" placeholder='{"token":"Basic ...","userDomainId":"..."}'></textarea></div><div class="head-actions" style="margin-top:12px"><button class="btn btn-primary" id="importConfig">导入配置</button><button class="btn btn-secondary" id="exportConfig">导出当前配置</button></div></article>
+          <article class="card"><div class="card-head"><div><h2 class="card-title">数据备份</h2><div class="card-note">SQLite 数据库与本地题目图片一并打包</div></div></div><p class="muted">建议定期下载备份。Word/PDF 用于学习和打印，ZIP 备份用于完整保留原始数据。</p><button class="btn btn-secondary" id="downloadBackup">⇩ 下载完整备份 ZIP</button></article>
+          <article class="card"><div class="card-head"><div><h2 class="card-title">隐私与运行</h2><div class="card-note">本地优先，无账号系统</div></div></div><div style="display:grid;gap:12px"><div>✓ Token 以 AES-256-GCM 认证加密存储</div><div>✓ 主密钥文件权限限制为当前系统账户读写</div><div>✓ 错题备份不包含凭证与主密钥</div><div>✓ 只有使用 AI 拍题时才请求 139 官方接口</div><div>✓ Token 不出现在错题查询与文档导出中</div></div></article>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div class="modal-backdrop" id="editorModal"><div class="modal modal-lg"><div class="modal-head"><h2 id="editorTitle">录入错题</h2><button class="btn btn-icon" data-close="editorModal">×</button></div><form id="editorForm"><div class="modal-body"><input type="hidden" id="editId"><div class="editor-grid"><div class="field span-2"><label>题目标题</label><input class="input" id="editTitle" placeholder="用一句话概括这道题"></div><div class="field"><label>学科</label><input class="input" id="editSubject" list="subjectList" placeholder="如：数学"></div><div class="field"><label>年级</label><input class="input" id="editGrade" placeholder="如：高二"></div><div class="field span-2"><label>题目内容（支持 HTML / LaTeX 原文）</label><textarea class="textarea" id="editQuestion" rows="6" required></textarea></div><div class="field"><label>我的错误作答</label><textarea class="textarea" id="editMyAnswer"></textarea></div><div class="field"><label>正确答案</label><textarea class="textarea" id="editAnswer"></textarea></div><div class="field span-2"><label>解析 / 正确思路</label><textarea class="textarea" id="editAnalysis" rows="5"></textarea></div><div class="field"><label>错因</label><select class="select" id="editErrorType"><option>知识盲区</option><option>概念混淆</option><option>审题失误</option><option>计算错误</option><option>方法不熟</option><option>粗心大意</option><option>时间不足</option><option>其他</option></select></div><div class="field"><label>题型</label><input class="input" id="editQuestionType" placeholder="选择题 / 解答题 / 作文…"></div><div class="field"><label>难度</label><select class="select" id="editDifficulty"><option value="1">1 · 基础</option><option value="2">2 · 较易</option><option value="3" selected>3 · 中等</option><option value="4">4 · 较难</option><option value="5">5 · 挑战</option></select></div><div class="field"><label>掌握度</label><input class="input" id="editMastery" type="number" min="0" max="100" value="0"></div><div class="field"><label>知识点（逗号分隔）</label><input class="input" id="editKnowledge" placeholder="函数, 单调性"></div><div class="field"><label>标签（逗号分隔）</label><input class="input" id="editTags" placeholder="期中, 必会"></div><div class="field"><label>错题本</label><input class="input" id="editNotebook" value="默认错题本"></div><div class="field"><label>来源</label><input class="input" id="editSource" placeholder="试卷名称 / 练习册"></div><div class="field span-2"><label>复盘笔记</label><textarea class="textarea" id="editNote" placeholder="这次为什么错？下次看到什么信号应该想到什么方法？"></textarea></div><div class="field span-2"><label>题目图片</label><input class="input" type="file" id="editImages" accept="image/*" multiple><div class="image-strip" id="editImageStrip"></div></div><label class="check-row"><input type="checkbox" id="editStarred">加入重点收藏</label></div><datalist id="subjectList"><option>语文</option><option>数学</option><option>英语</option><option>物理</option><option>化学</option><option>生物</option><option>政治</option><option>历史</option><option>地理</option><option>其他</option></datalist></div><div class="modal-foot"><button type="button" class="btn btn-secondary" data-close="editorModal">取消</button><button type="submit" class="btn btn-primary" id="saveMistake">保存错题</button></div></form></div></div>
+
+<div class="modal-backdrop" id="detailModal"><div class="modal modal-lg"><div class="modal-head"><h2 id="detailTitle">错题详情</h2><button class="btn btn-icon" data-close="detailModal">×</button></div><div class="modal-body" id="detailBody"></div><div class="modal-foot"><button class="btn btn-danger" id="detailDelete">删除</button><button class="btn btn-secondary" id="detailDuplicate">复制一份</button><button class="btn btn-secondary" id="detailArchive">归档</button><button class="btn btn-primary" id="detailEdit">编辑</button></div></div></div>
+
+<div class="toast-stack" id="toastStack"></div>
+<script src="/vendor/katex/katex.min.js"></script>
+<script src="/vendor/katex/contrib/auto-render.js"></script>
+<script src="/static/app.js?v=20260912-model-select"></script>
+</body>
+</html>
