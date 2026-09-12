@@ -23,6 +23,8 @@ const state = {
 
 const SUBJECT_ICONS = { '语文': '文', '数学': '数', '英语': '英', '物理': '理', '化学': '化', '生物': '生', '政治': '政', '历史': '史', '地理': '地' };
 
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
 function renderIcons() {
   if (window.lucide?.createIcons) window.lucide.createIcons();
 }
@@ -40,6 +42,12 @@ function applyTheme(theme) {
   button.setAttribute('title', isLight ? '切换深色模式' : '切换浅色模式');
   button.innerHTML = `<i data-lucide="${isLight ? 'moon' : 'sun'}"></i>`;
   renderIcons();
+}
+
+function resetScrollPosition() {
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
 }
 
 function bindAmbientMotion() {
@@ -168,13 +176,13 @@ async function switchView(view, pushHash = true) {
   $$('.nav-item[data-view]').forEach(node => node.classList.toggle('active', node.dataset.view === view));
   $('#sidebar').classList.remove('open');
   if (pushHash) history.replaceState(null, '', `#${view}`);
-  window.scrollTo({ top: 0, behavior: 'auto' });
-  document.documentElement.scrollTop = 0;
-  document.body.scrollTop = 0;
+  resetScrollPosition();
   if (view === 'dashboard') await loadDashboard();
   if (view === 'library') await loadLibrary();
   if (view === 'review') await loadReview();
   if (view === 'export') await refreshExportItems();
+  resetScrollPosition();
+  requestAnimationFrame(resetScrollPosition);
 }
 
 async function loadConfig() {
