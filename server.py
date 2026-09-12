@@ -12,9 +12,11 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import uuid
 import zipfile
@@ -23,11 +25,12 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image, ImageOps, UnidentifiedImageError
+from starlette.middleware.gzip import GZipMiddleware
 
 import storage
 import credential_store
@@ -56,6 +59,15 @@ EXPORT_TASKS: set[asyncio.Task] = set()
 EXPORT_WORKERS = asyncio.Semaphore(2)
 CAMSCANNER_WORKER = asyncio.Semaphore(1)
 CLIPROXY_MODEL_CACHE: tuple[float, set[str]] = (0.0, set())
+ACCESS_COOKIE = "mistake_book_session"
+ACCESS_TOKEN_FILE = storage.DATA_DIR / ".access-token"
+ACCESS_TOKEN = ""
+ACCESS_TOKEN_SOURCE = ""
+ACCESS_ATTEMPTS: dict[str, list[float]] = {}
+ACCESS_ATTEMPT_LIMIT = 8
+ACCESS_ATTEMPT_WINDOW = 60
+ACCESS_SESSIONS: dict[str, float] = {}
+ACCESS_SESSION_TTL = 12 * 60 * 60
 
 # ----------------------------- 常量 -----------------------------
 BASE_BP = "https://orches.yun.139.com/adaptor"
@@ -113,6 +125,44 @@ def load_config() -> dict:
 config = load_config()
 
 
+def _load_access_token() -> tuple[str, str]:
+    """读取访问密钥；未提供环境变量时生成仅当前用户可读的本地密钥。"""
+    configured = os.environ.get("MISTAKE_BOOK_AUTH_TOKEN", "").strip()
+    if configured:
+        if len(configured) < 16:
+            raise RuntimeError("MISTAKE_BOOK_AUTH_TOKEN 至少需要 16 个字符")
+        return configured, "environment"
+    try:
+        if ACCESS_TOKEN_FILE.exists():
+            local_token = ACCESS_TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if len(local_token) >= 16:
+                try:
+                    ACCESS_TOKEN_FILE.chmod(0o600)
+                except OSError:
+                    pass
+                return local_token, "local-file"
+        storage.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        local_token = secrets.token_urlsafe(32)
+        fd = os.open(ACCESS_TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, local_token.encode("utf-8"))
+        finally:
+            os.close(fd)
+        return local_token, "generated"
+    except FileExistsError:
+        return ACCESS_TOKEN_FILE.read_text(encoding="utf-8").strip(), "local-file"
+
+
+ACCESS_TOKEN, ACCESS_TOKEN_SOURCE = _load_access_token()
+if ACCESS_TOKEN_SOURCE == "generated":
+    print("[access] ✅ 已生成本地访问密钥（仅显示在本次启动日志）：")
+    print(f"         {ACCESS_TOKEN}")
+elif ACCESS_TOKEN_SOURCE == "environment":
+    print("[access] ✅ 已启用 MISTAKE_BOOK_AUTH_TOKEN 访问鉴权")
+else:
+    print("[access] ✅ 已启用本地访问密钥：data/.access-token")
+
+
 def _cam_scanner_configured() -> bool:
     return all(config.get(field) for field in ("camScannerS2", "camScannerCssu", "camScannerCsste"))
 
@@ -163,6 +213,33 @@ def member_headers() -> dict:
 def require_auth() -> None:
     if not config.get("token"):
         raise HTTPException(400, "未配置 token，请先在页面「配置」里粘贴登录 token")
+
+
+def _access_authenticated(request: Request) -> bool:
+    session = request.cookies.get(ACCESS_COOKIE, "")
+    now = time.time()
+    expires_at = ACCESS_SESSIONS.get(session, 0)
+    if session and expires_at > now:
+        return True
+    if session:
+        ACCESS_SESSIONS.pop(session, None)
+    supplied = request.headers.get("x-access-token", "")
+    return bool(supplied) and secrets.compare_digest(supplied, ACCESS_TOKEN)
+
+
+def _access_client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _access_rate_limited(request: Request) -> bool:
+    now = time.monotonic()
+    client_key = _access_client_key(request)
+    attempts = [stamp for stamp in ACCESS_ATTEMPTS.get(client_key, []) if now - stamp < ACCESS_ATTEMPT_WINDOW]
+    ACCESS_ATTEMPTS[client_key] = attempts
+    if len(attempts) >= ACCESS_ATTEMPT_LIMIT:
+        return True
+    attempts.append(now)
+    return False
 
 # ----------------------------- 工具 -----------------------------
 IMG_SRC_RE = re.compile(r'(<img[^>]*?src=")([^"]+)(")', re.I)
@@ -265,7 +342,7 @@ def project_file_map() -> dict:
         "echo ==============================\r\n"
         "pip install -r requirements.txt\r\n"
         "python server.py\r\n"
-        "start http://localhost:18666\r\n"
+        "start http://localhost:50003\r\n"
         "pause\r\n"
     )
     out["ai-solve-proxy/run.sh"] = (
@@ -273,12 +350,62 @@ def project_file_map() -> dict:
         "pip3 install -r requirements.txt\n"
         "python3 server.py &\n"
         "sleep 2\n"
-        "(open http://localhost:18666 || xdg-open http://localhost:18666) 2>/dev/null\n"
+        "(open http://localhost:50003 || xdg-open http://localhost:50003) 2>/dev/null\n"
     )
     return out
 
 # ----------------------------- FastAPI -----------------------------
+LOGIN_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b0e0e"><title>知错 · 访问验证</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0b0e0e;color:#e7f0ec}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 20% 15%,#1d3732 0,transparent 35%),#0b0e0e}
+.panel{width:min(100%,420px);padding:34px;border:1px solid #35514a;border-radius:24px;background:rgba(17,27,26,.9);box-shadow:0 24px 80px #0008}.mark{width:44px;height:44px;display:grid;place-items:center;border-radius:14px;background:#c8f169;color:#0b0e0e;margin-bottom:24px}.mark svg{width:22px;height:22px}
+h1{font-size:28px;letter-spacing:-.04em;margin:0 0 8px}p{color:#9eb1ab;line-height:1.6;margin:0 0 24px}.field{display:grid;gap:8px}label{font-size:12px;color:#9eb1ab;letter-spacing:.08em}input{width:100%;padding:14px 15px;border:1px solid #46645c;border-radius:12px;background:#0d1716;color:#e7f0ec;font-size:15px;outline:none}input:focus{border-color:#c8f169;box-shadow:0 0 0 3px #c8f16922}button{width:100%;margin-top:16px;padding:14px;border:0;border-radius:12px;background:#c8f169;color:#0b0e0e;font-weight:700;font-size:14px;cursor:pointer}button:disabled{opacity:.6;cursor:wait}.error{min-height:22px;margin-top:14px;color:#ff9a83;font-size:13px}
+</style></head><body><main class="panel"><div class="mark"><i data-lucide="lock-keyhole"></i></div><h1>进入知错</h1><p>此服务已启用访问鉴权。请输入启动时配置的访问密钥，密钥不会写入地址栏。</p><form id="login"><div class="field"><label for="token">访问密钥</label><input id="token" type="password" autocomplete="current-password" required autofocus></div><button id="submit" type="submit">解锁工作台</button><div class="error" id="error" role="alert"></div></form></main>
+<script src="/static/vendor/lucide/lucide.min.js"></script><script>lucide.createIcons();document.querySelector('#login').addEventListener('submit',async event=>{event.preventDefault();const button=document.querySelector('#submit'),error=document.querySelector('#error');button.disabled=true;error.textContent='';try{const response=await fetch('/api/access/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:document.querySelector('#token').value})});const data=await response.json();if(!response.ok)throw new Error(data.detail||'验证失败');location.replace('/')}catch(exception){error.textContent=exception.message||'验证失败，请稍后重试'}finally{button.disabled=false}})</script></body></html>"""
+
 app = FastAPI(title="知错 · AI 错题本", version="2.0.0")
+
+
+@app.middleware("http")
+async def access_middleware(request: Request, call_next):
+    path = request.url.path
+    public = (
+        path in {"/api/access/status", "/api/access/login", "/api/access/logout", "/healthz"}
+        or path.startswith("/static/")
+        or path.startswith("/vendor/katex/")
+    )
+    if not public and not _access_authenticated(request):
+        if path == "/":
+            return HTMLResponse(LOGIN_PAGE, status_code=401)
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "需要访问密钥"}, status_code=401,
+                                headers={"WWW-Authenticate": "Bearer"})
+        return Response(status_code=401)
+    response = await call_next(request)
+    if path == "/":
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    elif path.startswith(("/static/", "/vendor/katex/")):
+        response.headers.setdefault("Cache-Control", "public, max-age=604800, immutable")
+    elif path.startswith("/media/") or path == "/proxy":
+        response.headers.setdefault("Cache-Control", "private, max-age=86400")
+    elif path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1024,
+    compresslevel=6,
+    exclude_content_types=(
+        "image/", "audio/", "video/", "application/zip", "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+)
+
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 app.mount("/media", StaticFiles(directory=storage.MEDIA_DIR), name="media")
 app.mount("/vendor/katex", StaticFiles(directory="/usr/share/javascript/katex", follow_symlink=True), name="katex")
@@ -286,6 +413,45 @@ app.mount("/vendor/katex", StaticFiles(directory="/usr/share/javascript/katex", 
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+
+
+class AccessLoginReq(BaseModel):
+    token: str = Field(default="", min_length=1, max_length=512)
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
+
+
+@app.get("/api/access/status")
+async def access_status(request: Request):
+    return {"enabled": True, "authenticated": _access_authenticated(request)}
+
+
+@app.post("/api/access/login")
+async def access_login(request: Request, req: AccessLoginReq):
+    if _access_rate_limited(request):
+        raise HTTPException(429, "尝试次数过多，请 1 分钟后再试", headers={"Retry-After": "60"})
+    if not secrets.compare_digest(req.token.strip(), ACCESS_TOKEN):
+        raise HTTPException(401, "访问密钥不正确")
+    session = secrets.token_urlsafe(32)
+    expires_at = time.time() + ACCESS_SESSION_TTL
+    ACCESS_SESSIONS.update({key: value for key, value in ACCESS_SESSIONS.items() if value > time.time()})
+    ACCESS_SESSIONS[session] = expires_at
+    response = JSONResponse({"success": True})
+    response.set_cookie(
+        ACCESS_COOKIE, session, max_age=ACCESS_SESSION_TTL, httponly=True,
+        samesite="lax", secure=request.url.scheme == "https", path="/",
+    )
+    return response
+
+
+@app.post("/api/access/logout")
+async def access_logout():
+    response = JSONResponse({"success": True})
+    response.delete_cookie(ACCESS_COOKIE, path="/")
+    return response
 
 # ---- 配置 ----
 class ConfigReq(BaseModel):
@@ -1749,7 +1915,7 @@ if __name__ == "__main__":
 
     tailscale_ip = tailscale_ipv4()
     HOST = os.environ.get("MISTAKE_BOOK_HOST") or tailscale_ip or "127.0.0.1"
-    PORT = int(os.environ.get("MISTAKE_BOOK_PORT", "18666"))
+    PORT = int(os.environ.get("MISTAKE_BOOK_PORT", "50003"))
     access_host = tailscale_ip if tailscale_ip and HOST in (tailscale_ip, "0.0.0.0") else "127.0.0.1"
     access_url = f"http://{access_host}:{PORT}"
     print(f"==============================================")
