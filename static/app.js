@@ -27,6 +27,29 @@ function renderIcons() {
   if (window.lucide?.createIcons) window.lucide.createIcons();
 }
 
+function applyTheme(theme) {
+  const nextTheme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = nextTheme;
+  try { localStorage.setItem('mistake_theme', nextTheme); } catch {}
+  const metaTheme = $('meta[name="theme-color"]');
+  if (metaTheme) metaTheme.content = nextTheme === 'light' ? '#f4f5ef' : '#0b0e0e';
+  const button = $('#themeToggle');
+  if (!button) return;
+  const isLight = nextTheme === 'light';
+  button.setAttribute('aria-label', isLight ? '切换深色模式' : '切换浅色模式');
+  button.setAttribute('title', isLight ? '切换深色模式' : '切换浅色模式');
+  button.innerHTML = `<i data-lucide="${isLight ? 'moon' : 'sun'}"></i>`;
+  renderIcons();
+}
+
+function bindAmbientMotion() {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  window.addEventListener('pointermove', event => {
+    document.documentElement.style.setProperty('--pointer-x', ((event.clientX / window.innerWidth) - .5).toFixed(3));
+    document.documentElement.style.setProperty('--pointer-y', ((event.clientY / window.innerHeight) - .5).toFixed(3));
+  }, { passive: true });
+}
+
 function escapeHTML(value = '') {
   return String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 }
@@ -145,7 +168,9 @@ async function switchView(view, pushHash = true) {
   $$('.nav-item[data-view]').forEach(node => node.classList.toggle('active', node.dataset.view === view));
   $('#sidebar').classList.remove('open');
   if (pushHash) history.replaceState(null, '', `#${view}`);
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: 'auto' });
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
   if (view === 'dashboard') await loadDashboard();
   if (view === 'library') await loadLibrary();
   if (view === 'review') await loadReview();
@@ -1320,6 +1345,7 @@ function bindEvents() {
   const toggleSidebar = open => $('#sidebar').classList.toggle('open', open ?? !$('#sidebar').classList.contains('open'));
   $('#mobileMenu').onclick = () => toggleSidebar();
   $('#sidebarScrim').onclick = () => toggleSidebar(false);
+  $('#themeToggle').onclick = () => applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
   $('#editorForm').addEventListener('submit', saveEditor);
   $('#detailDelete').onclick = deleteDetail; $('#detailDuplicate').onclick = duplicateDetail; $('#detailArchive').onclick = archiveDetail;
   $('#detailEdit').onclick = () => { const item = state.detail; closeModal('detailModal'); resetEditor(item); openModal('editorModal'); };
@@ -1406,6 +1432,8 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
+  bindAmbientMotion();
+  applyTheme(document.documentElement.dataset.theme || 'dark');
   renderIcons();
   resumeExportJobs();
   $('#uid').value = localStorage.getItem('mistake_uid') || '';

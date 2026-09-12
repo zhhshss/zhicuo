@@ -3,10 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#123d3b">
+  <meta name="theme-color" content="#0b0e0e">
   <title>知错 · AI 错题本</title>
+  <script>
+    try { document.documentElement.dataset.theme = localStorage.getItem('mistake_theme') || 'dark'; } catch { document.documentElement.dataset.theme = 'dark'; }
+  </script>
   <link rel="stylesheet" href="/vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="/static/styles.css?v=20260901-background-export">
+  <link rel="stylesheet" href="/static/styles.css?v=20260912-light-mode">
 </head>
 <body>
 <div class="app-shell">
@@ -40,13 +43,14 @@
       <div class="global-search"><span class="search-icon"><i data-lucide="search"></i></span><input id="globalSearch" placeholder="搜索题目、知识点或标签…" aria-label="搜索题目、知识点或标签"><button class="search-clear hidden" id="globalSearchClear" type="button" aria-label="清除搜索"><i data-lucide="x"></i></button><span class="keycap">Ctrl K</span></div>
       <div class="top-actions">
         <button class="status-pill" id="aiStatus" data-view="settings" type="button" title="打开 AI 与数据设置"><span class="status-dot"></span><span>AI 未配置</span></button>
+        <button class="btn btn-icon theme-toggle" id="themeToggle" type="button" aria-label="切换浅色模式" title="切换浅色模式"><i data-lucide="sun"></i></button>
         <button class="btn btn-primary" data-action="new"><i data-lucide="plus"></i>录入错题</button>
       </div>
     </header>
 
     <div class="content">
       <section class="view active" id="view-dashboard">
-        <div class="page-head"><div><div class="eyebrow">LEARNING OVERVIEW</div><h1 class="page-title">今天，也要把错误变成进步。</h1><p class="page-desc" id="greetingLine">每一道认真复盘的错题，都在缩短与答案的距离。</p></div><div class="head-actions"><button class="btn btn-secondary" data-view-jump="review"><i data-lucide="rotate-ccw"></i>开始复习</button><button class="btn btn-primary" data-view-jump="capture"><i data-lucide="camera"></i>拍题整理</button></div></div>
+        <div class="page-head hero-head"><div class="hero-copy"><div class="eyebrow">LEARNING / 01</div><h1 class="page-title">把错误，<em>变成</em><br>下一次的答案。</h1><p class="page-desc" id="greetingLine">每一道认真复盘的错题，都在缩短与答案的距离。</p><div class="hero-caption"><span>LOCAL FIRST</span><span>ADAPTIVE REVIEW</span><span>AI ASSISTED</span></div></div><div class="hero-side"><div class="hero-orbit"><span class="orbit-dot"></span><span class="orbit-label">TODAY<br>IS A GOOD<br>DAY TO LEARN</span></div><div class="head-actions"><button class="btn btn-secondary" data-view-jump="review"><i data-lucide="rotate-ccw"></i>开始复习</button><button class="btn btn-primary" data-view-jump="capture"><i data-lucide="camera"></i>拍题整理</button></div></div></div>
         <div class="grid dashboard-grid">
           <article class="card stat-card"><span class="stat-icon"><i data-lucide="library"></i></span><div class="stat-label">累计错题</div><div class="stat-value" id="statTotal">0</div><div class="stat-foot">沉淀是进步的第一步</div></article>
           <article class="card stat-card coral"><span class="stat-icon"><i data-lucide="rotate-ccw"></i></span><div class="stat-label">今日待复习</div><div class="stat-value" id="statDue">0</div><div class="stat-foot">按记忆节奏准时回顾</div></article>
