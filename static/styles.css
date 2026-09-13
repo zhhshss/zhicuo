@@ -496,6 +496,14 @@ html[data-theme="light"] .sidebar-scrim { background: rgba(23,34,31,.36); }
   .global-search { flex: 1; width: auto; }
   .keycap, .status-pill { display: none; }
   .content { padding: 32px 15px 55px; }
+  html[data-theme="light"] body::before,
+  html[data-theme="light"] body::after { display: none; }
+  html[data-theme="light"] body,
+  html[data-theme="light"] .main,
+  html[data-theme="light"] .content { background: #f8f9f5; }
+  html[data-theme="light"] .card,
+  html[data-theme="light"] .toolbar,
+  html[data-theme="light"] .filter-panel { box-shadow: 0 2px 10px rgba(35,48,40,.06); }
   .page-head, .hero-head { display: block; min-height: 0; margin-bottom: 30px; }
   .page-title { font-size: clamp(42px, 14vw, 70px); }
   .hero-side { display: flex; align-items: flex-start; justify-content: space-between; gap: 22px; margin-top: 28px; }
